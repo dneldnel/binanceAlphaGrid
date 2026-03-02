@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "binance-alpha-grid"
+version = "0.1.0"
+description = "Minimal runnable Binance Alpha dual-side grid bot skeleton"
+readme = "README.md"
+requires-python = ">=3.14"
+
+[project.scripts]
+alpha-grid = "cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+py-modules = ["cli"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

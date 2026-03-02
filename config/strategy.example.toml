@@ -1,0 +1,212 @@
+[runtime]
+strategy_id = "alpha-dual-side-grid"
+refresh_interval_ms = 1000
+rotation_interval_sec = 300
+state_store_path = "data/alpha_grid_state.db"
+log_level = "info"
+dry_run = true
+
+[chain]
+chain_id = 56
+chain_name = "bsc"
+rpc_urls = ["https://bsc-dataseed.binance.org"]
+wallet_address = "0x0000000000000000000000000000000000000000"
+private_key_env = "BSC_ALPHA_PRIVATE_KEY"
+explorer_base_url = "https://bscscan.com"
+
+[market]
+quote_token_symbol = "USDT"
+quote_token_address = "0x55d398326f99059fF775485246999027B3197955"
+allowed_route_types = ["amm"]
+probe_quote_usd = 30.0
+max_price_impact_bps = 150.0
+stale_quote_sec = 5
+
+[universe]
+mode = "dynamic"
+include_symbols = ["币安人生", "假企企鹅"]
+exclude_symbols = []
+max_symbols = 12
+min_listing_age_hours = 72
+min_pool_liquidity_usd = 150000.0
+min_24h_volume_usd = 500000.0
+max_token_tax_bps = 300.0
+max_drop_pct_5m = 18.0
+keep_positions_on_rotation = true
+
+[reference_price]
+source = "executable_mid_plus_ema"
+ema_alpha = 0.18
+mid_weight = 0.55
+ema_weight = 0.45
+volatility_lookback_sec = 300
+volatility_source = "executable_mid"
+
+[grid]
+mode = "dynamic"
+base_step_bps = 70.0
+min_step_bps = 40.0
+max_step_bps = 500.0
+spread_multiplier = 1.20
+volatility_multiplier = 1.50
+rebuild_on_fill = true
+rebuild_on_reference_change_bps = 35.0
+paired_take_profit_bps = 180.0
+
+[[grid.buy_levels]]
+level = 1
+offset_bps = 80.0
+order_quote_usd = 60.0
+cooldown_sec = 8
+
+[[grid.buy_levels]]
+level = 2
+offset_bps = 140.0
+order_quote_usd = 90.0
+cooldown_sec = 12
+
+[[grid.buy_levels]]
+level = 3
+offset_bps = 220.0
+order_quote_usd = 130.0
+cooldown_sec = 18
+
+[[grid.buy_levels]]
+level = 4
+offset_bps = 320.0
+order_quote_usd = 180.0
+cooldown_sec = 25
+
+[[grid.sell_levels]]
+level = 1
+offset_bps = 120.0
+order_base_ratio = 0.18
+cooldown_sec = 8
+
+[[grid.sell_levels]]
+level = 2
+offset_bps = 190.0
+order_base_ratio = 0.22
+cooldown_sec = 12
+
+[[grid.sell_levels]]
+level = 3
+offset_bps = 280.0
+order_base_ratio = 0.28
+cooldown_sec = 18
+
+[[grid.sell_levels]]
+level = 4
+offset_bps = 400.0
+order_base_ratio = 0.35
+cooldown_sec = 25
+
+[inventory]
+target_base_ratio = 0.35
+inventory_skew_factor_bps = 450.0
+max_inventory_shift_bps = 220.0
+reserve_base_tokens = 3.0
+max_quote_per_symbol_usd = 1500.0
+max_base_exposure_usd = 1800.0
+min_quote_reserve_usd = 300.0
+min_sell_base_usd = 8.0
+allow_emergency_sell_reserve = false
+
+[execution]
+router = "auto"
+deadline_sec = 45
+slippage_bps = 80.0
+max_gas_gwei = 0.30
+max_gas_usd_per_tx = 0.10
+estimated_fee_bps = 0.0
+min_net_edge_bps = 15.0
+min_expected_profit_usd = 0.25
+single_symbol_single_inflight = true
+max_inflight_txs = 4
+retry_times = 1
+retry_backoff_ms = 600
+
+[risk]
+kill_switch_file = "run/alpha-grid.stop"
+max_daily_realized_loss_usd = 120.0
+max_daily_gas_usd = 25.0
+max_consecutive_failed_tx = 6
+max_failed_tx_per_symbol = 3
+max_trades_per_symbol_per_hour = 160
+hard_stop_from_cost_bps = 1200.0
+pause_on_liquidity_drop = true
+pause_on_honeypot_signal = true
+pause_on_route_failure = true
+
+[reporting]
+dashboard_refresh_sec = 1
+persist_trades = true
+persist_quotes = false
+recent_log_lines = 10
+
+[simulation]
+seed = 7
+starting_quote_usd = 1200.0
+starting_base_units = 12.0
+default_drift_bps = 0.0
+default_volatility_bps = 140.0
+default_spread_bps = 60.0
+
+[symbols.default]
+enabled = true
+
+[symbols."币安人生"]
+enabled = true
+
+[symbols."币安人生".inventory]
+max_quote_per_symbol_usd = 2000.0
+reserve_base_tokens = 4.0
+
+[symbols."币安人生".simulation]
+initial_price = 0.143547
+volatility_bps = 160.0
+
+[symbols."币安人生".grid]
+
+[[symbols."币安人生".grid.buy_levels]]
+level = 1
+offset_bps = 70.0
+order_quote_usd = 80.0
+cooldown_sec = 6
+
+[[symbols."币安人生".grid.buy_levels]]
+level = 2
+offset_bps = 120.0
+order_quote_usd = 120.0
+cooldown_sec = 10
+
+[[symbols."币安人生".grid.buy_levels]]
+level = 3
+offset_bps = 200.0
+order_quote_usd = 180.0
+cooldown_sec = 16
+
+[[symbols."币安人生".grid.sell_levels]]
+level = 1
+offset_bps = 110.0
+order_base_ratio = 0.16
+cooldown_sec = 6
+
+[[symbols."币安人生".grid.sell_levels]]
+level = 2
+offset_bps = 180.0
+order_base_ratio = 0.24
+cooldown_sec = 10
+
+[[symbols."币安人生".grid.sell_levels]]
+level = 3
+offset_bps = 260.0
+order_base_ratio = 0.32
+cooldown_sec = 16
+
+[symbols."假企企鹅"]
+enabled = true
+
+[symbols."假企企鹅".simulation]
+initial_price = 0.027163
+volatility_bps = 135.0

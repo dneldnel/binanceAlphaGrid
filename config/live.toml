@@ -1,0 +1,181 @@
+[runtime]
+strategy_id = "alpha-dual-side-grid-live"
+mode = "paper"
+refresh_interval_ms = 1000
+rotation_interval_sec = 300
+state_store_path = "data/alpha_grid_live.db"
+log_level = "info"
+allow_live = false
+allow_mainnet = false
+
+# Safe rollout:
+# 1. keep mode = "paper"
+# 2. keep allow_live = false
+# 3. keep allow_mainnet = false
+# 4. only switch to live after paper validation and small-size checks
+
+[chain]
+chain_id = 56
+chain_name = "bsc"
+rpc_urls = ["https://bsc-dataseed.binance.org"]
+rpc_timeout_sec = 15
+wallet_address = "0x0000000000000000000000000000000000000000"
+private_key_env = "BSC_ALPHA_PRIVATE_KEY"
+explorer_base_url = "https://bscscan.com"
+
+[router]
+kind = "uniswap_v2"
+address = "0x0000000000000000000000000000000000000000"
+spender_address = "0x0000000000000000000000000000000000000000"
+quote_method = "getAmountsOut"
+buy_swap_method = "swapExactTokensForTokensSupportingFeeOnTransferTokens"
+sell_swap_method = "swapExactTokensForTokensSupportingFeeOnTransferTokens"
+approve_max = true
+tx_wait_timeout_sec = 120
+tx_poll_interval_sec = 2.0
+
+[market]
+quote_token_symbol = "USDT"
+quote_token_address = "0x55d398326f99059fF775485246999027B3197955"
+quote_token_decimals = 18
+allowed_route_types = ["amm"]
+probe_quote_usd = 20.0
+max_price_impact_bps = 120.0
+stale_quote_sec = 5
+
+[universe]
+mode = "static"
+include_symbols = ["ALPHA_EXAMPLE"]
+exclude_symbols = []
+max_symbols = 1
+min_listing_age_hours = 72
+min_pool_liquidity_usd = 150000.0
+min_24h_volume_usd = 500000.0
+max_token_tax_bps = 300.0
+max_drop_pct_5m = 18.0
+keep_positions_on_rotation = true
+
+[reference_price]
+source = "executable_mid_plus_ema"
+ema_alpha = 0.18
+mid_weight = 0.55
+ema_weight = 0.45
+volatility_lookback_sec = 300
+volatility_source = "executable_mid"
+
+[grid]
+mode = "dynamic"
+base_step_bps = 70.0
+min_step_bps = 40.0
+max_step_bps = 400.0
+spread_multiplier = 1.20
+volatility_multiplier = 1.50
+rebuild_on_fill = true
+rebuild_on_reference_change_bps = 35.0
+paired_take_profit_bps = 180.0
+
+[[grid.buy_levels]]
+level = 1
+offset_bps = 80.0
+order_quote_usd = 20.0
+cooldown_sec = 8
+
+[[grid.buy_levels]]
+level = 2
+offset_bps = 140.0
+order_quote_usd = 30.0
+cooldown_sec = 12
+
+[[grid.sell_levels]]
+level = 1
+offset_bps = 120.0
+order_base_ratio = 0.20
+cooldown_sec = 8
+
+[[grid.sell_levels]]
+level = 2
+offset_bps = 190.0
+order_base_ratio = 0.30
+cooldown_sec = 12
+
+[inventory]
+target_base_ratio = 0.30
+inventory_skew_factor_bps = 450.0
+max_inventory_shift_bps = 180.0
+reserve_base_tokens = 0.0
+max_quote_per_symbol_usd = 150.0
+max_base_exposure_usd = 150.0
+min_quote_reserve_usd = 25.0
+min_sell_base_usd = 8.0
+allow_emergency_sell_reserve = false
+
+[execution]
+router = "single-router"
+deadline_sec = 45
+slippage_bps = 80.0
+max_gas_gwei = 3.0
+max_gas_usd_per_tx = 0.30
+estimated_fee_bps = 0.0
+min_net_edge_bps = 15.0
+min_expected_profit_usd = 0.25
+single_symbol_single_inflight = true
+max_inflight_txs = 1
+retry_times = 1
+retry_backoff_ms = 800
+
+[risk]
+kill_switch_file = "run/alpha-grid.stop"
+max_daily_realized_loss_usd = 30.0
+max_daily_gas_usd = 10.0
+max_consecutive_failed_tx = 3
+max_failed_tx_per_symbol = 2
+max_trades_per_symbol_per_hour = 30
+hard_stop_from_cost_bps = 1200.0
+pause_on_liquidity_drop = true
+pause_on_honeypot_signal = true
+pause_on_route_failure = true
+
+[reporting]
+dashboard_refresh_sec = 1
+persist_trades = true
+persist_quotes = false
+recent_log_lines = 10
+
+[simulation]
+seed = 7
+starting_quote_usd = 100.0
+starting_base_units = 0.0
+default_drift_bps = 0.0
+default_volatility_bps = 80.0
+default_spread_bps = 50.0
+
+[symbols.default]
+enabled = true
+
+[symbols."ALPHA_EXAMPLE"]
+enabled = true
+
+[symbols."ALPHA_EXAMPLE".simulation]
+initial_price = 0.010000
+volatility_bps = 80.0
+
+[symbols."ALPHA_EXAMPLE".route]
+base_token_address = "0x0000000000000000000000000000000000000000"
+base_token_decimals = 18
+quote_token_address = "0x55d398326f99059fF775485246999027B3197955"
+quote_token_decimals = 18
+buy_path = [
+  "0x55d398326f99059fF775485246999027B3197955",
+  "0x0000000000000000000000000000000000000000",
+]
+sell_path = [
+  "0x0000000000000000000000000000000000000000",
+  "0x55d398326f99059fF775485246999027B3197955",
+]
+fee_on_transfer = false
+
+# Replace every 0x000... placeholder before running paper or live mode.
+# Fields below are still planned but not wired into code yet:
+# router_abi_path = "abi/router.json"
+# max_notional_per_order = 20.0
+# max_position_per_symbol_usd = 150.0
