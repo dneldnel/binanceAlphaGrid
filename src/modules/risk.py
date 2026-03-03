@@ -18,6 +18,11 @@ class RiskManager:
         max_consecutive_failed_tx: int,
         max_failed_tx_per_symbol: int,
         max_trades_per_symbol_per_hour: int,
+        enforce_mainnet_rollout_controls: bool,
+        mainnet_buy_enabled: bool,
+        mainnet_sell_enabled: bool,
+        mainnet_max_notional_per_order: float,
+        mainnet_max_position_per_symbol_usd: float,
     ) -> None:
         self.min_net_edge_bps = min_net_edge_bps
         self.max_price_impact_bps = max_price_impact_bps
@@ -30,6 +35,30 @@ class RiskManager:
         self.max_consecutive_failed_tx = max_consecutive_failed_tx
         self.max_failed_tx_per_symbol = max_failed_tx_per_symbol
         self.max_trades_per_symbol_per_hour = max_trades_per_symbol_per_hour
+        self.enforce_mainnet_rollout_controls = enforce_mainnet_rollout_controls
+        self.mainnet_buy_enabled = mainnet_buy_enabled
+        self.mainnet_sell_enabled = mainnet_sell_enabled
+        self.mainnet_max_notional_per_order = mainnet_max_notional_per_order
+        self.mainnet_max_position_per_symbol_usd = mainnet_max_position_per_symbol_usd
+
+    def _effective_limit(self, base_limit: float, rollout_limit: float) -> float:
+        if not self.enforce_mainnet_rollout_controls or rollout_limit <= 0:
+            return base_limit
+        if base_limit <= 0:
+            return rollout_limit
+        return min(base_limit, rollout_limit)
+
+    def _effective_max_notional_per_order(self) -> float:
+        return self._effective_limit(
+            self.max_notional_per_order,
+            self.mainnet_max_notional_per_order,
+        )
+
+    def _effective_max_position_per_symbol_usd(self) -> float:
+        return self._effective_limit(
+            self.max_position_per_symbol_usd,
+            self.mainnet_max_position_per_symbol_usd,
+        )
 
     def global_trade_pause_reason(
         self,
@@ -82,17 +111,19 @@ class RiskManager:
         *,
         state: SymbolState,
     ) -> str | None:
-        if self.max_notional_per_order > 0 and preview.quote_value > self.max_notional_per_order:
+        max_notional_per_order = self._effective_max_notional_per_order()
+        max_position_per_symbol_usd = self._effective_max_position_per_symbol_usd()
+        if max_notional_per_order > 0 and preview.quote_value > max_notional_per_order:
             return (
                 "order notional "
-                f"{preview.quote_value:.4f} > {self.max_notional_per_order:.4f}"
+                f"{preview.quote_value:.4f} > {max_notional_per_order:.4f}"
             )
-        if preview.side == "buy" and self.max_position_per_symbol_usd > 0:
+        if preview.side == "buy" and max_position_per_symbol_usd > 0:
             projected_position_usd = (state.base_balance + preview.base_qty) * preview.price
-            if projected_position_usd > self.max_position_per_symbol_usd:
+            if projected_position_usd > max_position_per_symbol_usd:
                 return (
                     "projected position "
-                    f"{projected_position_usd:.4f} > {self.max_position_per_symbol_usd:.4f}"
+                    f"{projected_position_usd:.4f} > {max_position_per_symbol_usd:.4f}"
                 )
         if (
             self.max_price_impact_bps > 0
@@ -128,19 +159,20 @@ class RiskManager:
     ) -> TradeDecision | None:
         order_quote_usd = target.order_quote_usd or 0.0
         projected_position_usd = (state.base_balance * quote.exec_buy_price) + order_quote_usd
+        max_notional_per_order = self._effective_max_notional_per_order()
+        max_position_per_symbol_usd = self._effective_max_position_per_symbol_usd()
 
+        if self.enforce_mainnet_rollout_controls and not self.mainnet_buy_enabled:
+            return None
         if net_edge_bps < self.min_net_edge_bps:
             return None
         if state.quote_balance_usd - order_quote_usd < symbol.inventory.min_quote_reserve_usd:
             return None
         if order_quote_usd > symbol.inventory.max_quote_per_symbol_usd:
             return None
-        if self.max_notional_per_order > 0 and order_quote_usd > self.max_notional_per_order:
+        if max_notional_per_order > 0 and order_quote_usd > max_notional_per_order:
             return None
-        if (
-            self.max_position_per_symbol_usd > 0
-            and projected_position_usd > self.max_position_per_symbol_usd
-        ):
+        if max_position_per_symbol_usd > 0 and projected_position_usd > max_position_per_symbol_usd:
             return None
         if (
             self.max_trades_per_symbol_per_hour > 0
@@ -171,14 +203,17 @@ class RiskManager:
         order_base_ratio = target.order_base_ratio or 0.0
         order_base_qty = sellable_base * order_base_ratio
         order_notional_usd = order_base_qty * quote.exec_sell_price
+        max_notional_per_order = self._effective_max_notional_per_order()
 
+        if self.enforce_mainnet_rollout_controls and not self.mainnet_sell_enabled:
+            return None
         if net_edge_bps < self.min_net_edge_bps:
             return None
         if order_base_qty <= 0:
             return None
         if order_base_qty * quote.exec_sell_price < symbol.inventory.min_sell_base_usd:
             return None
-        if self.max_notional_per_order > 0 and order_notional_usd > self.max_notional_per_order:
+        if max_notional_per_order > 0 and order_notional_usd > max_notional_per_order:
             return None
         if (
             self.max_trades_per_symbol_per_hour > 0

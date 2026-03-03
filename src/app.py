@@ -6,9 +6,10 @@ from datetime import datetime, timedelta, timezone
 
 from core.helpers import bps_change
 from core.models import AppConfig, SymbolConfig, SymbolState, TradeDecision
-from evm import EvmRouterClient
+from evm import EvmRouterClient, PendingPoolTransaction
 from modules.execution import ExecutionFailure, LiveExecutionEngine, build_execution_engine
 from modules.grid import GridEngine
+from modules.config_guard import ensure_deployable_chain_config
 from modules.quote import QuoteSignalError, build_quote_engine
 from modules.reference_price import ReferencePriceEngine
 from modules.reporter import Reporter
@@ -21,6 +22,7 @@ class Application:
     def __init__(self, config: AppConfig, *, no_sleep: bool = False) -> None:
         self.config = config
         self.no_sleep = no_sleep
+        ensure_deployable_chain_config(config)
         self._kill_switch_active = False
         self._consecutive_failed_tx_count = 0
         self._failed_tx_count_by_symbol = {
@@ -56,6 +58,13 @@ class Application:
             max_consecutive_failed_tx=config.risk.max_consecutive_failed_tx,
             max_failed_tx_per_symbol=config.risk.max_failed_tx_per_symbol,
             max_trades_per_symbol_per_hour=config.risk.max_trades_per_symbol_per_hour,
+            enforce_mainnet_rollout_controls=(
+                config.runtime.mode == "live" and config.chain.chain_id == 56
+            ),
+            mainnet_buy_enabled=config.risk.mainnet_buy_enabled,
+            mainnet_sell_enabled=config.risk.mainnet_sell_enabled,
+            mainnet_max_notional_per_order=config.risk.mainnet_max_notional_per_order,
+            mainnet_max_position_per_symbol_usd=config.risk.mainnet_max_position_per_symbol_usd,
         )
         self.execution = build_execution_engine(config)
         self.state_store = StateStore(config.runtime.state_store_path)
@@ -285,7 +294,9 @@ class Application:
         if not isinstance(self.execution, LiveExecutionEngine):
             return
 
-        recoverable_rows = self.state_store.load_pending_txs(("prepared", "submitted", "retryable"))
+        recoverable_rows = self.state_store.load_pending_txs(
+            ("prepared", "submitted", "retryable", "cancelling")
+        )
         for row in recoverable_rows:
             try:
                 self._recover_pending_tx_row(row)
@@ -314,6 +325,8 @@ class Application:
 
         state = self.states[symbol.name]
         attempt_count = int(pending_tx["attempt_count"] or 0)
+        if self._recover_cancel_stage(symbol, pending_tx):
+            return
         if self._recover_swap_stage(symbol, state, pending_tx):
             return
         if self._recover_approve_stage(symbol, pending_tx):
@@ -370,6 +383,90 @@ class Application:
         )
         self.state_store.sync_symbol_state(state)
 
+    def _recover_cancel_stage(
+        self,
+        symbol: SymbolConfig,
+        pending_tx: sqlite3.Row,
+    ) -> bool:
+        pending_tx_id = int(pending_tx["id"])
+        cancel_tx_hash = str(pending_tx["cancel_tx_hash"] or "").strip() or None
+        cancel_nonce = self._pending_tx_nonce(pending_tx, "cancel_nonce")
+        cancel_gas_price_wei = self._pending_tx_gas_price_wei(pending_tx, "cancel_gas_price_wei")
+        if cancel_tx_hash is None and cancel_nonce is None:
+            return False
+
+        receipt_status = None
+        if cancel_tx_hash is not None:
+            receipt_status = self.execution.client.get_transaction_receipt_status(cancel_tx_hash)
+        if receipt_status is not None:
+            message = f"cancel tx receipt status={receipt_status}"
+            if receipt_status == 1:
+                message = f"cancel tx confirmed: {cancel_tx_hash}"
+            self._sync_execution_attempt_result(
+                execution_attempt_id=None,
+                pending_tx_id=pending_tx_id,
+                approve_tx_hash=str(pending_tx["approve_tx_hash"] or "").strip() or None,
+                approve_nonce=self._pending_tx_nonce(pending_tx, "approve_nonce"),
+                approve_gas_price_wei=self._pending_tx_gas_price_wei(
+                    pending_tx,
+                    "approve_gas_price_wei",
+                ),
+                swap_tx_hash=str(pending_tx["swap_tx_hash"] or pending_tx["tx_hash"] or "").strip()
+                or None,
+                swap_nonce=self._pending_tx_nonce(pending_tx, "swap_nonce"),
+                swap_gas_price_wei=self._pending_tx_gas_price_wei(
+                    pending_tx,
+                    "swap_gas_price_wei",
+                ),
+                cancel_tx_hash=cancel_tx_hash,
+                cancel_nonce=cancel_nonce,
+                cancel_gas_price_wei=cancel_gas_price_wei,
+            )
+            self.state_store.mark_pending_tx_cancelled(
+                pending_tx_id,
+                message,
+                cancel_tx_hash=cancel_tx_hash,
+                cancel_nonce=cancel_nonce,
+                cancel_gas_price_wei=cancel_gas_price_wei,
+            )
+            self.reporter.record_message(
+                symbol.name,
+                f"pending tx {pending_tx_id} cancelled: {message}",
+            )
+            return True
+
+        if cancel_nonce is None:
+            message = "cancel tx missing nonce metadata for safe recovery"
+            self.state_store.mark_pending_tx_orphaned(pending_tx_id, message)
+            self._maybe_record_pending_message(symbol.name, pending_tx, message)
+            return True
+
+        latest_nonce, pending_nonce = self.execution.client.get_wallet_nonce_state()
+        if pending_nonce > cancel_nonce:
+            if self._handle_external_pending_replacement(
+                symbol,
+                pending_tx,
+                stage="cancel",
+                nonce=cancel_nonce,
+                known_hashes=(
+                    cancel_tx_hash,
+                    str(pending_tx["swap_tx_hash"] or pending_tx["tx_hash"] or "").strip() or None,
+                    str(pending_tx["approve_tx_hash"] or "").strip() or None,
+                ),
+            ):
+                return True
+            message = f"cancel nonce {cancel_nonce} still pending on-chain"
+            self.state_store.mark_pending_tx_cancelling(
+                pending_tx_id,
+                message,
+                cancel_tx_hash=cancel_tx_hash,
+                cancel_nonce=cancel_nonce,
+                cancel_gas_price_wei=cancel_gas_price_wei,
+            )
+            self._maybe_record_pending_message(symbol.name, pending_tx, message)
+            return True
+        return False
+
     def _recover_swap_stage(
         self,
         symbol: SymbolConfig,
@@ -405,13 +502,38 @@ class Application:
                 self._maybe_record_pending_message(symbol.name, pending_tx, message)
                 return True
             if pending_nonce > swap_nonce:
+                if self._handle_external_pending_replacement(
+                    symbol,
+                    pending_tx,
+                    stage="swap",
+                    nonce=swap_nonce,
+                    known_hashes=(
+                        swap_tx_hash or None,
+                        approve_tx_hash,
+                        str(pending_tx["cancel_tx_hash"] or "").strip() or None,
+                    ),
+                ):
+                    return True
                 attempt_count = int(pending_tx["attempt_count"] or 0)
                 retry_budget = 1 + max(0, self.config.execution.retry_times)
                 if self._pending_tx_retry_due(pending_tx) and attempt_count < retry_budget:
                     return False
+                if attempt_count >= retry_budget and self._pending_tx_cancel_due(pending_tx):
+                    return self._attempt_pending_tx_cancel(
+                        symbol,
+                        pending_tx,
+                        stage="swap",
+                    )
                 message = f"swap nonce {swap_nonce} still pending on-chain"
                 if attempt_count >= retry_budget:
-                    message = f"{message}; replacement budget exhausted"
+                    message = (
+                        f"{message}; replacement budget exhausted"
+                    )
+                    if self.config.execution.cancel_pending_after_sec > 0:
+                        message = (
+                            f"{message}; waiting "
+                            f"{self.config.execution.cancel_pending_after_sec}s cancel threshold"
+                        )
                 self.state_store.mark_pending_tx_inflight(
                     pending_tx_id,
                     message,
@@ -550,13 +672,37 @@ class Application:
             self._maybe_record_pending_message(symbol.name, pending_tx, message)
             return True
         if pending_nonce > approve_nonce:
+            if self._handle_external_pending_replacement(
+                symbol,
+                pending_tx,
+                stage="approve",
+                nonce=approve_nonce,
+                known_hashes=(
+                    approve_tx_hash,
+                    str(pending_tx["cancel_tx_hash"] or "").strip() or None,
+                ),
+            ):
+                return True
             attempt_count = int(pending_tx["attempt_count"] or 0)
             retry_budget = 1 + max(0, self.config.execution.retry_times)
             if self._pending_tx_retry_due(pending_tx) and attempt_count < retry_budget:
                 return False
+            if attempt_count >= retry_budget and self._pending_tx_cancel_due(pending_tx):
+                return self._attempt_pending_tx_cancel(
+                    symbol,
+                    pending_tx,
+                    stage="approve",
+                )
             message = f"approve nonce {approve_nonce} still pending on-chain"
             if attempt_count >= retry_budget:
-                message = f"{message}; replacement budget exhausted"
+                message = (
+                    f"{message}; replacement budget exhausted"
+                )
+                if self.config.execution.cancel_pending_after_sec > 0:
+                    message = (
+                        f"{message}; waiting "
+                        f"{self.config.execution.cancel_pending_after_sec}s cancel threshold"
+                    )
             self.state_store.mark_pending_tx_inflight(
                 pending_tx_id,
                 message,
@@ -582,6 +728,236 @@ class Application:
             return True
         return datetime.now(timezone.utc) >= datetime.fromisoformat(next_retry_at)
 
+    def _pending_tx_cancel_due(self, pending_tx: sqlite3.Row) -> bool:
+        cancel_after_sec = self.config.execution.cancel_pending_after_sec
+        if cancel_after_sec <= 0:
+            return False
+        submitted_at = str(pending_tx["submitted_at"] or "").strip()
+        if not submitted_at:
+            return False
+        return datetime.now(timezone.utc) >= (
+            datetime.fromisoformat(submitted_at) + timedelta(seconds=cancel_after_sec)
+        )
+
+    def _handle_external_pending_replacement(
+        self,
+        symbol: SymbolConfig,
+        pending_tx: sqlite3.Row,
+        *,
+        stage: str,
+        nonce: int,
+        known_hashes: tuple[str | None, ...],
+    ) -> bool:
+        wallet_pool = self._wallet_pending_transactions_for_nonce(nonce)
+        if wallet_pool is None or not wallet_pool:
+            return False
+
+        normalized_known_hashes = {
+            tx_hash.lower()
+            for tx_hash in known_hashes
+            if tx_hash
+        }
+        if any(pool_tx.tx_hash.lower() in normalized_known_hashes for pool_tx in wallet_pool):
+            return False
+
+        replacement = wallet_pool[0]
+        if replacement.is_zero_value_self_transfer(self.execution.client.wallet_address):
+            message = (
+                f"{stage} nonce {nonce} is being replaced by external cancel tx "
+                f"{replacement.tx_hash} via {replacement.source}"
+            )
+            self._sync_pending_cancel_metadata(
+                pending_tx,
+                cancel_tx_hash=replacement.tx_hash,
+                cancel_nonce=replacement.nonce,
+                cancel_gas_price_wei=replacement.gas_price_wei,
+            )
+            self.state_store.mark_pending_tx_cancelling(
+                int(pending_tx["id"]),
+                message,
+                cancel_tx_hash=replacement.tx_hash,
+                cancel_nonce=replacement.nonce,
+                cancel_gas_price_wei=replacement.gas_price_wei,
+            )
+            self.reporter.record_message(
+                symbol.name,
+                f"pending tx {int(pending_tx['id'])}: {message}",
+            )
+            return True
+
+        message = (
+            f"{stage} nonce {nonce} replaced by external pending tx "
+            f"{self._describe_pool_transaction(replacement)}"
+        )
+        self.state_store.mark_pending_tx_orphaned(int(pending_tx["id"]), message)
+        self.reporter.record_message(
+            symbol.name,
+            f"pending tx {int(pending_tx['id'])}: {message}",
+        )
+        return True
+
+    def _wallet_pending_transactions_for_nonce(
+        self,
+        nonce: int,
+    ) -> list[PendingPoolTransaction] | None:
+        if not isinstance(self.execution, LiveExecutionEngine):
+            return None
+        try:
+            grouped = self.execution.client.get_wallet_pending_transactions_by_nonce()
+        except Exception:
+            return None
+        if grouped is None:
+            return None
+        return grouped.get(nonce, [])
+
+    def _describe_pool_transaction(
+        self,
+        transaction: PendingPoolTransaction,
+    ) -> str:
+        to_address = transaction.to_address or "(contract-create)"
+        gas_price = (
+            str(transaction.gas_price_wei)
+            if transaction.gas_price_wei is not None
+            else "unknown"
+        )
+        return (
+            f"{transaction.tx_hash} source={transaction.source} "
+            f"to={to_address} value_wei={transaction.value_wei} gas_price_wei={gas_price}"
+        )
+
+    def _sync_pending_cancel_metadata(
+        self,
+        pending_tx: sqlite3.Row,
+        *,
+        cancel_tx_hash: str | None,
+        cancel_nonce: int | None,
+        cancel_gas_price_wei: int | None,
+    ) -> None:
+        self._sync_execution_attempt_result(
+            execution_attempt_id=None,
+            pending_tx_id=int(pending_tx["id"]),
+            approve_tx_hash=str(pending_tx["approve_tx_hash"] or "").strip() or None,
+            approve_nonce=self._pending_tx_nonce(pending_tx, "approve_nonce"),
+            approve_gas_price_wei=self._pending_tx_gas_price_wei(
+                pending_tx,
+                "approve_gas_price_wei",
+            ),
+            swap_tx_hash=str(pending_tx["swap_tx_hash"] or pending_tx["tx_hash"] or "").strip() or None,
+            swap_nonce=self._pending_tx_nonce(pending_tx, "swap_nonce"),
+            swap_gas_price_wei=self._pending_tx_gas_price_wei(
+                pending_tx,
+                "swap_gas_price_wei",
+            ),
+            cancel_tx_hash=cancel_tx_hash,
+            cancel_nonce=cancel_nonce,
+            cancel_gas_price_wei=cancel_gas_price_wei,
+        )
+
+    def _attempt_pending_tx_cancel(
+        self,
+        symbol: SymbolConfig,
+        pending_tx: sqlite3.Row,
+        *,
+        stage: str,
+    ) -> bool:
+        pending_tx_id = int(pending_tx["id"])
+        approve_tx_hash = str(pending_tx["approve_tx_hash"] or "").strip() or None
+        approve_nonce = self._pending_tx_nonce(pending_tx, "approve_nonce")
+        approve_gas_price_wei = self._pending_tx_gas_price_wei(pending_tx, "approve_gas_price_wei")
+        swap_tx_hash = str(pending_tx["swap_tx_hash"] or pending_tx["tx_hash"] or "").strip() or None
+        swap_nonce = self._pending_tx_nonce(pending_tx, "swap_nonce")
+        swap_gas_price_wei = self._pending_tx_gas_price_wei(pending_tx, "swap_gas_price_wei")
+        cancel_tx_hash = str(pending_tx["cancel_tx_hash"] or "").strip() or None
+        cancel_nonce = self._pending_tx_nonce(pending_tx, "cancel_nonce")
+        cancel_gas_price_wei = self._pending_tx_gas_price_wei(pending_tx, "cancel_gas_price_wei")
+
+        try:
+            cancel_tx = self.execution.cancel_pending_tx(pending_tx)
+        except Exception as exc:
+            extracted_hash, extracted_nonce, extracted_gas_price_wei = (
+                self._extract_submitted_tx_metadata(exc)
+            )
+            cancel_tx_hash = extracted_hash or cancel_tx_hash
+            cancel_nonce = extracted_nonce if extracted_nonce is not None else cancel_nonce
+            cancel_gas_price_wei = (
+                extracted_gas_price_wei
+                if extracted_gas_price_wei is not None
+                else cancel_gas_price_wei
+            )
+            self._sync_execution_attempt_result(
+                execution_attempt_id=None,
+                pending_tx_id=pending_tx_id,
+                approve_tx_hash=approve_tx_hash,
+                approve_nonce=approve_nonce,
+                approve_gas_price_wei=approve_gas_price_wei,
+                swap_tx_hash=swap_tx_hash,
+                swap_nonce=swap_nonce,
+                swap_gas_price_wei=swap_gas_price_wei,
+                cancel_tx_hash=cancel_tx_hash,
+                cancel_nonce=cancel_nonce,
+                cancel_gas_price_wei=cancel_gas_price_wei,
+            )
+            if cancel_tx_hash is not None:
+                message = (
+                    f"{stage} nonce stuck on-chain after replacement budget exhaustion; "
+                    f"cancel tx submitted {cancel_tx_hash}"
+                )
+                self.state_store.mark_pending_tx_cancelling(
+                    pending_tx_id,
+                    message,
+                    cancel_tx_hash=cancel_tx_hash,
+                    cancel_nonce=cancel_nonce,
+                    cancel_gas_price_wei=cancel_gas_price_wei,
+                )
+                self.reporter.record_message(
+                    symbol.name,
+                    f"pending tx {pending_tx_id} cancelling via tx {cancel_tx_hash}: {exc}",
+                )
+                return True
+            message = f"{stage} cancel attempt failed: {exc}"
+            self.state_store.mark_pending_tx_inflight(
+                pending_tx_id,
+                message,
+                approve_tx_hash=approve_tx_hash,
+                approve_nonce=approve_nonce,
+                approve_gas_price_wei=approve_gas_price_wei,
+                swap_tx_hash=swap_tx_hash,
+                swap_nonce=swap_nonce,
+                swap_gas_price_wei=swap_gas_price_wei,
+            )
+            self._maybe_record_pending_message(symbol.name, pending_tx, message)
+            return True
+
+        self._sync_execution_attempt_result(
+            execution_attempt_id=None,
+            pending_tx_id=pending_tx_id,
+            approve_tx_hash=approve_tx_hash,
+            approve_nonce=approve_nonce,
+            approve_gas_price_wei=approve_gas_price_wei,
+            swap_tx_hash=swap_tx_hash,
+            swap_nonce=swap_nonce,
+            swap_gas_price_wei=swap_gas_price_wei,
+            cancel_tx_hash=cancel_tx.tx_hash,
+            cancel_nonce=cancel_tx.nonce,
+            cancel_gas_price_wei=cancel_tx.gas_price_wei,
+        )
+        message = (
+            f"{stage} nonce stuck on-chain after replacement budget exhaustion; "
+            f"cancelled by replacement tx {cancel_tx.tx_hash}"
+        )
+        self.state_store.mark_pending_tx_cancelled(
+            pending_tx_id,
+            message,
+            cancel_tx_hash=cancel_tx.tx_hash,
+            cancel_nonce=cancel_tx.nonce,
+            cancel_gas_price_wei=cancel_tx.gas_price_wei,
+        )
+        self.reporter.record_message(
+            symbol.name,
+            f"pending tx {pending_tx_id} cancelled by tx {cancel_tx.tx_hash}",
+        )
+        return True
+
     def _pending_tx_nonce(
         self,
         pending_tx: sqlite3.Row,
@@ -591,6 +967,15 @@ class Application:
         if value is None:
             return None
         return int(value)
+
+    def _extract_submitted_tx_metadata(
+        self,
+        error: Exception,
+    ) -> tuple[str | None, int | None, int | None]:
+        tx_hash = getattr(error, "tx_hash", None)
+        nonce = getattr(error, "nonce", None)
+        gas_price_wei = getattr(error, "gas_price_wei", None)
+        return tx_hash, nonce, gas_price_wei
 
     def _pending_tx_gas_price_wei(
         self,
@@ -1123,10 +1508,14 @@ class Application:
         swap_tx_hash: str | None,
         swap_nonce: int | None,
         swap_gas_price_wei: int | None,
+        cancel_tx_hash: str | None = None,
+        cancel_nonce: int | None = None,
+        cancel_gas_price_wei: int | None = None,
     ) -> None:
         actual_gas_usd = self._actual_execution_gas_usd(
             approve_tx_hash=approve_tx_hash,
             swap_tx_hash=swap_tx_hash,
+            cancel_tx_hash=cancel_tx_hash,
         )
         if execution_attempt_id is not None:
             self.state_store.update_execution_attempt_result(
@@ -1137,6 +1526,9 @@ class Application:
                 swap_tx_hash=swap_tx_hash,
                 swap_nonce=swap_nonce,
                 swap_gas_price_wei=swap_gas_price_wei,
+                cancel_tx_hash=cancel_tx_hash,
+                cancel_nonce=cancel_nonce,
+                cancel_gas_price_wei=cancel_gas_price_wei,
                 actual_gas_usd=actual_gas_usd,
             )
             return
@@ -1149,6 +1541,9 @@ class Application:
                 swap_tx_hash=swap_tx_hash,
                 swap_nonce=swap_nonce,
                 swap_gas_price_wei=swap_gas_price_wei,
+                cancel_tx_hash=cancel_tx_hash,
+                cancel_nonce=cancel_nonce,
+                cancel_gas_price_wei=cancel_gas_price_wei,
                 actual_gas_usd=actual_gas_usd,
             )
 
@@ -1157,6 +1552,7 @@ class Application:
         *,
         approve_tx_hash: str | None,
         swap_tx_hash: str | None,
+        cancel_tx_hash: str | None,
     ) -> float | None:
         if self.config.runtime.mode != "live":
             return None
@@ -1168,6 +1564,8 @@ class Application:
             tx_hashes.append(approve_tx_hash)
         if swap_tx_hash and swap_tx_hash not in tx_hashes:
             tx_hashes.append(swap_tx_hash)
+        if cancel_tx_hash and cancel_tx_hash not in tx_hashes:
+            tx_hashes.append(cancel_tx_hash)
         if not tx_hashes:
             return None
 

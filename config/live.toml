@@ -9,10 +9,11 @@ allow_live = false
 allow_mainnet = false
 
 # Safe rollout:
-# 1. keep mode = "paper"
-# 2. keep allow_live = false
-# 3. keep allow_mainnet = false
-# 4. only switch to live after paper validation and small-size checks
+# 1. replace the wallet and symbol-route 0x000... placeholders
+# 2. run: python main.py --config config/live.toml --preflight
+# 3. keep mode = "paper", allow_live = false, allow_mainnet = false until preflight is clean
+# 4. for first funded run, switch to live and enable only one side
+# 5. keep notional/position caps at minimal-live defaults
 
 [chain]
 chain_id = 56
@@ -25,8 +26,8 @@ explorer_base_url = "https://bscscan.com"
 
 [router]
 kind = "uniswap_v2"
-address = "0x0000000000000000000000000000000000000000"
-spender_address = "0x0000000000000000000000000000000000000000"
+address = "0x10ED43C718714eb63d5aA57B78B54704E256024E"
+spender_address = "0x10ED43C718714eb63d5aA57B78B54704E256024E"
 router_abi_path = "abi/uniswap_v2_router.json"
 quote_method = "getAmountsOut"
 buy_swap_method = "swapExactTokensForTokensSupportingFeeOnTransferTokens"
@@ -40,7 +41,7 @@ quote_token_symbol = "USDT"
 quote_token_address = "0x55d398326f99059fF775485246999027B3197955"
 quote_token_decimals = 18
 allowed_route_types = ["amm"]
-probe_quote_usd = 20.0
+probe_quote_usd = 5.0
 max_price_impact_bps = 120.0
 stale_quote_sec = 5
 
@@ -78,14 +79,8 @@ paired_take_profit_bps = 180.0
 [[grid.buy_levels]]
 level = 1
 offset_bps = 80.0
-order_quote_usd = 20.0
+order_quote_usd = 5.0
 cooldown_sec = 8
-
-[[grid.buy_levels]]
-level = 2
-offset_bps = 140.0
-order_quote_usd = 30.0
-cooldown_sec = 12
 
 [[grid.sell_levels]]
 level = 1
@@ -93,21 +88,15 @@ offset_bps = 120.0
 order_base_ratio = 0.20
 cooldown_sec = 8
 
-[[grid.sell_levels]]
-level = 2
-offset_bps = 190.0
-order_base_ratio = 0.30
-cooldown_sec = 12
-
 [inventory]
 target_base_ratio = 0.30
 inventory_skew_factor_bps = 450.0
 max_inventory_shift_bps = 180.0
 reserve_base_tokens = 0.0
-max_quote_per_symbol_usd = 150.0
-max_base_exposure_usd = 150.0
-min_quote_reserve_usd = 25.0
-min_sell_base_usd = 8.0
+max_quote_per_symbol_usd = 25.0
+max_base_exposure_usd = 25.0
+min_quote_reserve_usd = 5.0
+min_sell_base_usd = 5.0
 allow_emergency_sell_reserve = false
 
 [execution]
@@ -116,6 +105,7 @@ deadline_sec = 45
 slippage_bps = 80.0
 max_gas_gwei = 3.0
 replacement_gas_bump_bps = 1250.0
+cancel_pending_after_sec = 180
 max_gas_usd_per_tx = 0.30
 estimated_fee_bps = 0.0
 min_net_edge_bps = 15.0
@@ -127,8 +117,12 @@ retry_backoff_ms = 800
 
 [risk]
 kill_switch_file = "run/alpha-grid.stop"
-max_notional_per_order = 20.0
-max_position_per_symbol_usd = 150.0
+max_notional_per_order = 5.0
+max_position_per_symbol_usd = 25.0
+mainnet_buy_enabled = false
+mainnet_sell_enabled = false
+mainnet_max_notional_per_order = 5.0
+mainnet_max_position_per_symbol_usd = 25.0
 max_daily_realized_loss_usd = 30.0
 max_daily_gas_usd = 10.0
 max_consecutive_failed_tx = 3
@@ -179,5 +173,8 @@ sell_path = [
 fee_on_transfer = false
 
 # Replace every 0x000... placeholder before running paper or live mode.
+# Use exactly one real symbol for the first mainnet minimal-live run.
 # `risk.max_position_per_symbol_usd` is the live risk cap.
 # `inventory.max_base_exposure_usd` is kept for strategy sizing compatibility.
+# `risk.mainnet_*` only applies in `mode = "live"` on BSC mainnet.
+# Regular grid buys/sells respect these rollout switches; hard-stop emergency sells still work.

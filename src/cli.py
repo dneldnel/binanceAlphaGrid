@@ -7,6 +7,7 @@ from typing import Sequence
 
 from core.config import load_config
 from app import Application
+from modules.preflight import run_preflight
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -40,6 +41,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Skip waiting between iterations.",
     )
+    parser.add_argument(
+        "--preflight",
+        action="store_true",
+        help="Run live/paper connectivity and wallet preflight checks, then exit.",
+    )
     return parser
 
 
@@ -59,6 +65,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     if args.seed is not None:
         config = replace(config, simulation=replace(config.simulation, seed=args.seed))
+
+    if args.preflight:
+        return run_preflight(config)
 
     app = Application(config=config, no_sleep=args.no_sleep)
     return app.run(iterations=args.iterations)

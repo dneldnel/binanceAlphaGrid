@@ -123,6 +123,7 @@ class ExecutionConfig:
     slippage_bps: float
     max_gas_gwei: float
     replacement_gas_bump_bps: float
+    cancel_pending_after_sec: int
     max_gas_usd_per_tx: float
     estimated_fee_bps: float
     min_net_edge_bps: float
@@ -138,6 +139,10 @@ class RiskConfig:
     kill_switch_file: Path | None
     max_notional_per_order: float
     max_position_per_symbol_usd: float
+    mainnet_buy_enabled: bool
+    mainnet_sell_enabled: bool
+    mainnet_max_notional_per_order: float
+    mainnet_max_position_per_symbol_usd: float
     max_daily_realized_loss_usd: float
     max_daily_gas_usd: float
     max_consecutive_failed_tx: int

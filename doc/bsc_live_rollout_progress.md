@@ -22,16 +22,17 @@
 2. 更新“状态矩阵”或“当前确认的实施计划”中的相关内容。
 3. 在“更新日志”追加一条记录。
 
-最近更新时间：`2026-03-03`
+最近更新时间：`2026-03-04`
 
 ## 目标范围
 
-按既定顺序推进，不直接上主网开干：
+当前确认方案是直接从主网最小仓位切入，但仍保持其余收敛原则不变：
 
 1. 先把模拟执行替换成真实链上读写。
 2. 先接可控的单一路由源，不先做复杂聚合。
 3. 补齐实盘必需的配置、风控和 kill switch。
-4. 按 `测试网 -> 主网只读 -> 主网最小仓位 -> 多币扩展` 推进。
+4. 原建议是按 `测试网 -> 主网只读 -> 主网最小仓位 -> 多币扩展` 推进；`2026-03-04` 已确认当前执行顺序改为直接从 `主网最小仓位 -> 多币扩展` 开始。
+5. 测试网和主网只读保留为回退路径，不再作为当前门禁。
 
 ## 已确认的开发要求
 
@@ -104,6 +105,12 @@
 3. 主网最小实盘先跑单币、极小金额、单层网格、单侧交易。
 4. 单币稳定后再扩展多币和动态轮动。
 
+`2026-03-04` 补充确认：
+
+1. 上述四步仍保留为完整建议路径。
+2. 但当前执行计划已调整为跳过“测试网”和“主网只读”两步，直接进入“主网最小实盘”。
+3. 测试网与主网只读改为回退路径，不再作为当前门禁。
+
 ### 下一版应落地的六项开发任务
 
 1. 在 `config` 里新增 `live.toml` 模板，补钱包、路由、风控字段。
@@ -132,22 +139,22 @@
 
 1. live / paper / dry-run 模式已经接到入口层。
 2. 默认 dry-run 基线已经恢复可运行。
-3. nonce-aware 的 pending tx 恢复、replacement gas bump 第一版、README/依赖声明对齐、`max_daily_gas_usd` 的 receipt 实耗统计，以及 live 配置模板收口都已补齐，但 cancel/txpool 能力和主网推进清单仍未完成。
+3. nonce-aware 的 pending tx 恢复、replacement gas bump 第一版、cancel tx 第一版、txpool / 等价数据源第一版、README/依赖声明对齐、`max_daily_gas_usd` 的 receipt 实耗统计、主网最小仓位 / 单侧 live 保护开关，以及主网推进清单都已补齐，但外部替换识别边界和数据面风控仍未完成。
 
 ### 状态矩阵
 
 | 事项 | 状态 | 当前情况 | 主要缺口 |
 | --- | --- | --- | --- |
 | 真实 quote / 模拟 quote 双实现 | 已完成 | `src/modules/quote.py` 已通过 builder 接入；`paper/live` 使用真实 quote，`dry-run` 使用模拟 quote | live quote 仍只有基础 `getAmountsOut`，后续还要补独立预览接口与更细致的价格保护 |
-| 真实执行层 approve/swap/sign/send/receipt | 部分完成 | `src/modules/execution.py` 和 `src/evm.py` 已实现 allowance、approve、swap、签名、广播、wait receipt，并已拆成 preview / execute 两阶段接口；live fill 现已优先按 receipt 中的 ERC20 `Transfer` 日志回写，余额差分作为 fallback；approve/swap nonce 与 gas price 现已随 pending tx 持久化，恢复阶段会按 wallet `latest/pending nonce` 判断“继续等待 / 可安全重试 / 需人工处理”，同 nonce 重试会按上一笔 gas 做 replacement bump | 还没有 cancel tx 策略，也没有 txpool / 外部替换交易识别能力；复杂路由/聚合器下的成交核对边界还没有专门处理 |
+| 真实执行层 approve/swap/sign/send/receipt | 部分完成 | `src/modules/execution.py` 和 `src/evm.py` 已实现 allowance、approve、swap、签名、广播、wait receipt，并已拆成 preview / execute 两阶段接口；live fill 现已优先按 receipt 中的 ERC20 `Transfer` 日志回写，余额差分作为 fallback；approve/swap nonce 与 gas price 现已随 pending tx 持久化，恢复阶段会按 wallet `latest/pending nonce` 判断“继续等待 / 可安全重试 / 需人工处理”，同 nonce 重试会按上一笔 gas 做 replacement bump；replacement 预算耗尽且超过阈值后，现已支持同 nonce cancel tx 第一版；txpool / pending-block 第一版现已接入外部替换检测 | 外部替换识别仍依赖 provider 支持，复杂路由/聚合器下的成交核对边界还没有专门处理 |
 | 单一路由源接入 | 部分完成 | `src/evm.py` 已按通用 `UniswapV2 Router` 方式接了单一路由器；router ABI 现已支持通过 `router_abi_path` 从文件加载；preview 阶段已新增价格冲击与 gas 成本估算，用于实盘前风控拦截；route/liquidity/honeypot 一阶 pause signal 已接入 | 仍缺真实流动性/税费数据源，以及更稳健的失败分类 |
-| live 配置模板 | 已完成 | `config/live.toml` 已补齐安全默认值、`router_abi_path`、`max_notional_per_order`、`max_position_per_symbol_usd`，并附带 `config/abi/uniswap_v2_router.json` 模板；常规买卖单现已真正受这些字段约束 | 主网推进清单仍是单独未完成项，不属于模板缺口 |
+| live 配置模板 | 已完成 | `config/live.toml` 已补齐安全默认值、`router_abi_path`、`max_notional_per_order`、`max_position_per_symbol_usd`，并附带 `config/abi/uniswap_v2_router.json` 模板；常规买卖单现已真正受这些字段约束，并新增主网最小仓位 / 单侧 rollout 开关 | 剩余是按 runbook 执行，不是模板缺口 |
 | CLI 模式切换 `dry-run/paper/live` | 已完成 | `src/cli.py` 已支持 `--mode dry-run|paper|live` 覆盖配置模式 | `paper` 仍依赖一份可用的链上配置才能实际跑通 |
-| ExecutionEngine 统一接口 | 已完成 | `ExecutionEngine` 已拆成 `preview_buy / preview_sell / execute_buy / execute_sell`，`app` 已切到新的调用路径，preview 结果也已可写入 `pending_txs`；receipt/event 核对、nonce 落库、运行中恢复扫描、in-flight 限流和 replacement gas bump 都已接进统一执行层 | 还没有 cancel tx 策略与更细的风险元数据持久化 |
-| SQLite 持久化 | 部分完成 | 已新增 SQLite `StateStore`，并落地 `fills / positions / pending_txs / realized_pnl / execution_failures / execution_attempts` 表；主循环会同步 positions / realized pnl，fill 完成后会写 fills，live preview 会写 pending_txs，执行失败会写 `execution_failures`，实际发单前会写 `execution_attempts`；启动时会从 SQLite 恢复 position；pending tx 已扩展到 `prepared / submitted / retryable / confirmed / failed / orphaned`，并新增启动恢复、有限重试、nonce/gas price 持久化、运行时恢复扫描和 receipt/event 成交回写；`execution_attempts` 现在会同时保存 estimated/actual gas，并按 receipt 实耗汇总日内 gas | 失败分类和人工处置面板还不够细；无 receipt 的 in-flight 单据在确认前不会计入实际 gas |
+| ExecutionEngine 统一接口 | 已完成 | `ExecutionEngine` 已拆成 `preview_buy / preview_sell / execute_buy / execute_sell`，`app` 已切到新的调用路径，preview 结果也已可写入 `pending_txs`；receipt/event 核对、nonce 落库、运行中恢复扫描、in-flight 限流、replacement gas bump、cancel tx 第一版和 txpool / pending-block 外部替换检测第一版都已接进统一执行层 | 外部替换识别仍依赖 provider 支持与更细的风险元数据持久化 |
+| SQLite 持久化 | 部分完成 | 已新增 SQLite `StateStore`，并落地 `fills / positions / pending_txs / realized_pnl / execution_failures / execution_attempts` 表；主循环会同步 positions / realized pnl，fill 完成后会写 fills，live preview 会写 pending_txs，执行失败会写 `execution_failures`，实际发单前会写 `execution_attempts`；启动时会从 SQLite 恢复 position；pending tx 已扩展到 `prepared / submitted / retryable / cancelling / confirmed / cancelled / failed / orphaned`，并新增启动恢复、有限重试、nonce/gas price 持久化、cancel 元数据、txpool 识别结果、运行时恢复扫描和 receipt/event 成交回写；`execution_attempts` 现在会同时保存 estimated/actual gas，并按 receipt 实耗汇总日内 gas | 失败分类和人工处置面板还不够细；无 receipt 的 in-flight 单据在确认前不会计入实际 gas |
 | kill switch | 已完成 | `risk.kill_switch_file` 已接入配置；文件存在时主循环会停止新单并把 symbol 状态置为 `HALTED` | 当前架构仍是同步执行，没有异步 inflight tx 需要额外保护 |
-| live 安全开关 | 部分完成 | `src/evm.py` 已将只读 quote 与可写执行分离；写模式仍校验 `allow_live`、`allow_mainnet`；`config/live.toml` 已提供这两个开关 | 还没有更细的 live 保护开关，例如主网最小仓位/单侧限制开关 |
-| 主网推进流程文档化 | 未完成 | 代码中没有测试网/主网只读/最小仓位分阶段流程 | 缺少执行清单和验收标准 |
+| live 安全开关 | 已完成 | `src/evm.py` 已将只读 quote 与可写执行分离；写模式仍校验 `allow_live`、`allow_mainnet`；`config/live.toml` 已补齐 `risk.mainnet_buy_enabled / mainnet_sell_enabled / mainnet_max_notional_per_order / mainnet_max_position_per_symbol_usd`，主网 live 现在可显式限制单侧和极小仓位 | 剩余是按 runbook 实际执行，不再是代码缺口 |
+| 主网推进流程文档化 | 已完成 | 已新增 `doc/bsc_mainnet_rollout_runbook.md`，覆盖测试网写链、主网只读、主网最小仓位和扩容四阶段清单与验收标准 | 剩余是按清单执行，不是文档缺口 |
 
 ### 代码级审计结论
 
@@ -181,15 +188,15 @@
 
 这些问题决定了当前版本还不能作为“可控实盘基线”：
 
-1. `pending_txs` 虽已补到 replacement gas bump 第一版，但还没有 cancel tx 策略与 txpool 视角的更强恢复能力。
-2. 主网推进清单仍未接入，测试网 / 主网只读 / 最小仓位的验收标准还没落盘。
+1. `pending_txs` 已补到 txpool / 等价数据源第一版，但外部替换识别仍是 best-effort，受 provider 支持能力限制。
+2. 当前已确认跳过测试网 / 主网只读门禁，直接进入主网最小仓位；因此最关键的未完成项变成“主网最小仓位实盘验收本身”。
 3. honeypot / liquidity / route pause 仍主要依赖启发式信号，不是完整的数据面风控。
 
 #### 3. 即使修好入口，离“可控实盘”仍差的部分
 
-1. `pending tx` 已有 nonce-aware 的恢复、in-flight 限流和 replacement gas bump 第一版，但仍没有 cancel tx 管理器，也没有 txpool 数据面来识别外部替换交易。
+1. `pending tx` 已有 nonce-aware 的恢复、in-flight 限流、replacement gas bump、cancel tx 第一版和 txpool / pending-block 外部替换识别第一版，但 provider 不支持时仍会回退到 nonce-only 恢复。
 2. receipt/event 成交核对已经接入，但复杂路由、聚合器或特殊税费 token 下的边界还没有专门处理。
-3. 没有主网最小仓位、单币、单侧的显式保护开关。
+3. 主网最小仓位、单侧开关和分阶段 runbook 已经补齐，但当前既然跳过测试网和主网只读，就更需要把主网最小仓位的首轮验收压到极小规模。
 4. `paper` 模式虽然已打通入口，但仍需要一份完整的链上配置才能实际验链。
 5. `live/paper` 启动虽然已增加链上余额同步和 symbol 级异常隔离，但运行时余额校准、共享 quote 资金分配策略和后续生命周期管理还没有继续下沉。
 6. `max_daily_gas_usd` 现在按 receipt 实耗统计；但没有 receipt 的 in-flight 交易会在确认前暂不计入。
@@ -287,25 +294,30 @@
 
 ## 当前确认的实施计划
 
-`2026-03-03` 已确认：
+`2026-03-04` 已确认：
 
 1. 上一轮补充审计中的三项工作没有硬依赖，可以按 `严格审查 -> pending tx 设计 -> 实施表落盘` 的顺序处理。
 2. 从现在开始，这份文档既记录“已完成”，也记录“已确认但尚未开工”的计划顺序。
 3. 下一阶段先补执行与状态一致性，不先改策略核参数。
+4. `2026-03-04` 已确认：跳过测试网与主网只读，直接按 `doc/bsc_mainnet_rollout_runbook.md` 的阶段 2 进入主网最小仓位 live；阶段 0/1 改为回退路径。
 
 ### 当前优先级顺序
 
 1. 补更强的 pending tx 管理能力：
-   - cancel tx 策略
-   - txpool 或等价数据源支持
-   - 外部替换交易识别
-2. 细化风险统计与信号来源：
+   - provider 不支持 txpool 时的替代数据面与降级策略细化
+   - 外部替换交易识别边界细化
+   - cancel tx 失败分类与后续处置细化
+2. 执行主网最小仓位 live 首轮验收：
+   - 准备主网单币、单侧、极小 notional 的真实配置
+   - 先完成首笔 approve / swap / receipt 对账
+   - 再验证 pending recovery、replacement 或 cancel 路径
+3. 细化风险统计与信号来源：
    - `pause_on_liquidity_drop` 引入真实 liquidity 数据源
    - `pause_on_honeypot_signal` 引入更稳健的税费 / honeypot 信号
    - 评估是否需要单独的 in-flight gas 预算前瞻
-3. 收口主网推进文档与剩余 live 保护开关：
-   - 测试网 / 主网只读 / 最小仓位验收清单
-   - 主网最小仓位 / 单侧限制开关
+4. 按 runbook 执行主网推进验证：
+   - 直接按 `doc/bsc_mainnet_rollout_runbook.md` 执行主网最小仓位验收
+   - 基于首轮实测结果再决定是否补跑阶段 0/1，或继续收紧/放宽主网 rollout cap
 
 ### 已完成的本轮计划项
 
@@ -320,7 +332,11 @@
 9. 已完成：把 `max_daily_gas_usd` 从预计 gas 汇总切换到 receipt 实耗汇总。
 10. 已完成：补齐 replacement gas bump 第一版，同 nonce 重试会按上一笔 gas price 自动提价。
 11. 已完成：收口 live 配置模板，接线 `router_abi_path`、`max_notional_per_order`、`max_position_per_symbol_usd`，并新增 ABI 模板文件。
-12. 当前实现口径：
+12. 已完成：补齐 cancel tx 第一版，replacement 预算耗尽且超过阈值后会主动发起同 nonce 自转账撤单。
+13. 已完成：补齐 txpool / 等价数据源第一版，运行中恢复会优先识别同 wallet 的外部替换 pending tx。
+14. 已完成：补齐主网最小仓位 / 单侧 live 保护开关，BSC 主网 live 现可显式限制 buy/sell 方向，并叠加 rollout-only 小额 notional / position cap。
+15. 已完成：新增 `doc/bsc_mainnet_rollout_runbook.md`，把测试网写链、主网只读、主网最小仓位和扩容阶段的操作清单与验收条件落盘。
+16. 当前实现口径：
    - `paper/live` 启动时优先读取链上 base / quote 余额
    - base 余额直接按 symbol 对应 token 回写
    - 多个 symbol 共用同一 quote token 时，按各自 `max_quote_per_symbol_usd` 比例分配共享 quote 余额
@@ -333,6 +349,12 @@
    - 带 `swap_nonce` 的单据会先查 receipt，再结合 wallet `latest/pending nonce` 判断 `confirmed / inflight / retryable / orphaned`
    - 仅有 approve 阶段的单据也会结合 allowance 与 nonce 判断“继续等待 / 可重试 / 需人工处理”
    - 同 nonce replacement 重试现在会读取上一次 `approve/swap_gas_price_wei`，并按 `execution.replacement_gas_bump_bps` 计算最小提价
+   - `execution.cancel_pending_after_sec > 0` 时，replacement 预算耗尽且超过阈值的 pending tx 现会尝试发送同 nonce self-transfer cancel tx
+   - `pending_txs` 现会持久化 `cancel_tx_hash / cancel_nonce / cancel_gas_price_wei / cancel_requested_at / cancelled_at`
+   - `execution_attempts` 现会持久化 cancel tx 元数据，并在 receipt 到达后把 cancel gas 一并计入 `actual_gas_usd`
+   - `src/evm.py` 现在会按 `txpool_contentFrom -> txpool_content -> eth_getBlockByNumber('pending', true)` 顺序尝试读取钱包 pending tx
+   - 若同 nonce 上已经出现不属于当前单据的外部 self-transfer tx，会把单据转成 `cancelling`
+   - 若同 nonce 上已经出现未知外部 pending tx，会把单据标成 `orphaned` 并附带 txpool 摘要
    - `single_symbol_single_inflight` 与 `max_inflight_txs` 现在按 SQLite 未决单真实生效
    - live fill 与恢复确认会优先解析 receipt 中的 ERC20 `Transfer` 日志，余额差分作为 fallback
    - preview 结果已新增 `price_impact_bps / expected_profit_usd / estimated_gas_usd`
@@ -346,21 +368,257 @@
    - `[router].router_abi_path` 现在按配置文件相对路径解析，并支持直接加载 ABI 数组或带 `abi` 字段的 JSON
    - 常规买卖单现已同时受 `risk.max_notional_per_order` 限制
    - 常规买入单现已按 preview 后的 projected position 校验 `risk.max_position_per_symbol_usd`
+   - `mode = "live"` 且 `chain_id = 56` 时，常规买卖单还会叠加 `risk.mainnet_max_notional_per_order / risk.mainnet_max_position_per_symbol_usd`
+   - `mode = "live"` 且 `chain_id = 56` 时，常规网格买卖单会受 `risk.mainnet_buy_enabled / risk.mainnet_sell_enabled` 单侧开关限制
    - 未显式配置 `risk.max_position_per_symbol_usd` 时，会自动回退到旧字段 `inventory.max_base_exposure_usd`
    - `hard_stop_from_cost_bps` 现在会在 `exec_sell_price` 相对 `avg_cost_price` 跌破阈值时触发紧急卖出
    - `allow_emergency_sell_reserve = true` 时，hard stop 可卖出 reserve base；否则仅卖出可用仓位
+   - `risk.mainnet_*` 只作用于 BSC 主网 `live` 常规网格单，不影响 `paper` 模式，也不阻断 hard-stop emergency sell
    - `pause_on_route_failure` 与 `pause_on_liquidity_drop` 已按可分类的 quote / preview 失败接线
    - `pause_on_honeypot_signal` 已按执行错误关键字接成 sticky pause
    - `dry-run/paper` 在没有 router-backed preview 时不会因为 gas 不可估而误拦单
 
 ### 本轮补充审计得到的高优先级风险
 
-1. 还没有 cancel tx 策略，遇到长时间卡住的 pending tx 时仍缺少主动撤单能力。
+1. 外部替换交易识别现在仍是 best-effort；provider 不支持 txpool / pending block 时会回退到 nonce-only 恢复。
 2. honeypot / liquidity / route pause 当前仍主要靠启发式信号，不是完整的数据面风控。
 3. 失败事件当前只记录执行失败，不区分更细的错误类别，后续要和恢复状态机统一。
 4. 没有 receipt 的 in-flight 交易在确认前不会计入实际 gas，是否需要单独的前瞻预算仍未定。
 
 ## 更新日志
+
+### 2026-03-04 步骤 26：调整 rollout 顺序为直接主网最小仓位
+
+本次完成：
+
+1. `doc/bsc_mainnet_rollout_runbook.md` 已更新为当前确认顺序：
+   - 直接从主网最小仓位 live 开始
+   - 测试网写链与主网只读改为回退路径
+2. `doc/bsc_live_rollout_progress.md` 已同步更新：
+   - 最近更新时间
+   - 目标范围
+   - 当前确认的实施计划
+   - 当前优先级顺序
+3. 文档现在明确了：
+   - 当前不再把阶段 0/1 作为门禁
+   - 但跳过它们会提高首轮主网验证风险
+4. 已新增主网 preflight 命令入口：
+   - `python main.py --config config/live.toml --preflight`
+
+本次验证：
+
+1. 文档一致性人工检查：
+   - 结果：已消除“当前顺序仍是测试网 -> 主网只读 -> 主网最小仓位”的主要冲突描述
+
+本次剩余缺口：
+
+1. 主网最小仓位的真实首笔成交、receipt 对账和 pending recovery 验证仍未完成。
+2. 外部替换交易识别仍是 best-effort，当前直接上主网会放大这部分残余风险。
+3. 如主网首轮验证不稳定，仍需回退补跑阶段 0/1。
+
+### 2026-03-04 步骤 27：补齐主网最小仓位 preflight 入口
+
+本次完成：
+
+1. `src/modules/preflight.py` 已新增独立 preflight：
+   - 检查 runtime/live 开关
+   - 检查 kill switch
+   - 检查 RPC 连接与 chain id
+   - 检查钱包地址、私钥环境变量、BNB 余额、nonce
+   - 检查 router / spender / `WETH()`
+   - 检查 symbol route、token decimals、buy/sell quote、token balance、allowance
+   - 检查 txpool / pending-block 支持情况
+2. `src/cli.py` 已新增：
+   - `--preflight`
+3. `src/evm.py` 已新增：
+   - `get_native_balance_wei(...)`
+4. `config/live.toml` 已进一步收口到主网最小仓位默认值：
+   - `probe_quote_usd = 5.0`
+   - 单层 buy/sell grid
+   - `max_notional_per_order = 5.0`
+   - `max_position_per_symbol_usd = 25.0`
+   - `max_quote_per_symbol_usd / max_base_exposure_usd = 25.0`
+5. 已新增 `run/.gitkeep`，使 kill switch 目录默认存在。
+6. `README.md` 与 `doc/bsc_mainnet_rollout_runbook.md` 已补充 preflight 用法。
+
+本次验证：
+
+1. 执行 `python3.11 -m py_compile main.py src/cli.py src/modules/preflight.py src/evm.py`
+   - 结果：成功
+2. 执行 `python3.11 main.py --config config/live.toml --preflight`
+   - 结果：命令成功输出主网 preflight 摘要，并准确识别出当前模板仍缺：
+     - placeholder wallet
+     - placeholder base token
+3. 结果同时确认：
+   - 主网 RPC 可连
+   - txpool / pending-block 钱包视图当前可用
+
+本次剩余缺口：
+
+1. 仍未填入真实主网 wallet/symbol route，因此 preflight 还不是全绿。
+2. 首笔主网最小仓位成交与 receipt 对账仍未执行。
+3. testnet preflight 当前仍不是本轮门禁，只保留为回退路径。
+
+### 2026-03-04 步骤 28：补齐主网模板 router 与启动期静态 guard
+
+本次完成：
+
+1. `config/live.toml` 已不再使用 router 占位地址：
+   - `router.address`
+   - `router.spender_address`
+   - 当前已预填 PancakeSwap V2 BSC 主网 router
+2. 已新增 `src/modules/config_guard.py`：
+   - `paper/live` 启动前会静态拒绝 placeholder wallet/router/token/path
+   - 同时校验 `buy_path / sell_path` 的起止 token 是否与 symbol route 一致
+3. `src/app.py` 已接入这层 guard，因此即使跳过 `--preflight`，`paper/live` 也不会继续带着占位配置往下跑。
+4. `src/evm.py` 的 `validate_symbol(...)` 已同步收紧，运行中也会拒绝 placeholder route 与错误 path 端点。
+5. `README.md` 与 `doc/bsc_mainnet_rollout_runbook.md` 已同步更新：
+   - `config/live.toml` 现在已内置主网 router
+   - 当前 preflight 的主要剩余阻塞收口为 `wallet + 真实 symbol route`
+
+本次验证：
+
+1. 执行 `python3.11 -m py_compile main.py src/app.py src/evm.py src/modules/config_guard.py`
+   - 结果：成功
+2. 执行 `python3.11 main.py --config config/live.toml --preflight`
+   - 结果：router / spender / `WETH()` 已通过
+   - 剩余失败项已收口为：
+     - placeholder wallet
+     - placeholder symbol base token / route
+3. 执行 `python3.11 main.py --config config/live.toml --mode paper --iterations 1 --no-sleep`
+   - 结果：应用会在启动前直接报错退出，不再进入后续链路
+   - 当前报错聚焦于 placeholder wallet 与 symbol route，不再拖到链上 quote 才失败
+
+本次剩余缺口：
+
+1. 仍未填入真实主网 wallet。
+2. 仍未填入真实主网单币 symbol route。
+3. 首笔主网最小仓位成交、receipt 对账与 pending recovery 验收仍未执行。
+
+### 2026-03-03 步骤 25：阶段 0 测试网写链验证启动
+
+本次完成：
+
+1. 已新增 `config/testnet.live.toml`，作为阶段 0 专用测试网 live 模板：
+   - `chain_id = 97`
+   - `allow_live = true`
+   - `allow_mainnet = false`
+   - 独立 `state_store_path = data/alpha_grid_bsc_testnet.db`
+2. 模板已按官方测试网环境预置：
+   - BNB Chain 官方 BSC testnet RPC
+   - PancakeSwap testnet `Router v2`
+   - PancakeSwap testnet dummy `CAKE / BUSD`
+3. 阶段 0 现状已确认：
+   - 仓库内没有现成的测试网钱包配置
+   - 当前 shell 环境里没有 `BSC_TESTNET_ALPHA_PRIVATE_KEY`
+   - 因而现阶段只能先做本地预检，不能直接完成真实写链成交验证
+
+本次验证：
+
+1. 执行 `env PYTHONPATH=src python3.11 -c "from pathlib import Path; from core.config import load_config; cfg = load_config(Path('config/testnet.live.toml')); print(cfg.chain.chain_id, cfg.chain.chain_name, cfg.router.address, cfg.market.quote_token_symbol, list(cfg.symbols.keys()))"`
+   - 结果：成功，解析为 `97 / bsc-testnet / 0xD99D1c33F9fC3444f8101754aBC46c52416550D1 / BUSD / ['CAKE_TESTNET']`
+2. 执行 `python3.11 -m pip install 'web3>=7,<8'`
+   - 结果：成功；`python3.11 -c "import web3; print(web3.__version__)"` 返回 `7.14.1`
+3. 执行只读 testnet RPC / quote 预检：
+   - `EvmRouterClient(..., read_only=True)` 返回 `chain_id = 97`
+   - `get_amounts_out(10**18, buy_path)` 成功返回 `336843130830774192631786`
+4. 执行 live 模式启动预检：
+   - 用临时测试私钥构造匹配钱包地址后，`EvmRouterClient(...)` 成功初始化
+   - 返回 `chain_id = 97`
+5. 执行 1 轮应用主循环预检：
+   - `Application(...).run(iterations=1)` 返回 `rc = 0`
+   - `CAKE_TESTNET` 在无资金钱包条件下成功进入 `IDLE`
+
+本次剩余缺口：
+
+1. 仍缺可用的、有 gas 的测试网钱包地址与 `BSC_TESTNET_ALPHA_PRIVATE_KEY`。
+2. 仍缺测试网钱包的 dummy quote / base token 余额，无法完成 approve / swap / receipt 的真实写链验证。
+3. 还需补跑阶段 0 的实际 throughputs：成功成交、pending tx 恢复、replacement 或 cancel 演练。
+
+### 2026-03-03 步骤 24：主网 rollout 清单落盘与单侧/最小仓位开关
+
+本次完成：
+
+1. `src/core/models.py` 与 `src/core/config.py` 已新增并接线：
+   - `risk.mainnet_buy_enabled`
+   - `risk.mainnet_sell_enabled`
+   - `risk.mainnet_max_notional_per_order`
+   - `risk.mainnet_max_position_per_symbol_usd`
+2. `src/modules/risk.py` 已新增主网 live rollout 约束：
+   - 仅在 `mode = "live"` 且 `chain_id = 56` 时生效
+   - 常规网格买卖单会受单侧开关限制
+   - 常规网格买卖单会叠加 rollout-only 的更小 notional / position cap
+3. `src/app.py` 已把 BSC 主网 live 环境识别接到 `RiskManager`，避免这些约束误作用到 `paper`。
+4. `config/live.toml` 已新增安全默认值：
+   - `mainnet_buy_enabled = false`
+   - `mainnet_sell_enabled = false`
+   - `mainnet_max_notional_per_order = 5.0`
+   - `mainnet_max_position_per_symbol_usd = 25.0`
+5. 已新增 `doc/bsc_mainnet_rollout_runbook.md`：
+   - 明确测试网写链
+   - 主网只读
+   - 主网最小仓位
+   - 扩容放量
+   四阶段的配置要求、检查项和退出条件
+6. `README.md` 已同步补充：
+   - 主网 rollout guard rails
+   - runbook 入口
+
+本次验证：
+
+1. 执行 `python3 -m py_compile src/app.py src/modules/risk.py src/core/models.py src/core/config.py`
+   - 结果：成功
+2. 执行 `env PYTHONPATH=src python3.11 - <<'PY' ... load_config(Path('config/live.toml')) ... PY`
+   - 结果：成功，`mainnet_buy_enabled / mainnet_sell_enabled / mainnet_max_notional_per_order / mainnet_max_position_per_symbol_usd` 已分别解析为 `false / false / 5.0 / 25.0`
+
+本次剩余缺口：
+
+1. 外部替换交易识别仍是 best-effort，仍受 provider 能否提供 txpool / pending block 数据限制。
+2. honeypot / liquidity / route pause 仍主要依赖启发式信号，不是完整的数据面风控。
+3. runbook 已落盘，但测试网 / 主网只读 / 最小仓位的实际验收还没有完成。
+
+### 2026-03-03 步骤 23：cancel tx 第一版
+
+本次完成：
+
+1. `src/core/models.py` 与 `src/core/config.py` 已新增 `execution.cancel_pending_after_sec`。
+2. `config/live.toml` 已新增：
+   - `cancel_pending_after_sec = 180`
+3. `src/evm.py` 已新增：
+   - `send_native_transfer(...)`
+   - `cancel_transaction(...)`
+4. `src/modules/execution.py` 已新增 `cancel_pending_tx(...)`：
+   - 会复用 pending tx 的 `approve/swap/cancel gas price`
+   - 按 `replacement_gas_bump_bps` 计算 cancel tx 的最小 gas price
+   - 用同一 nonce 发送 zero-value self-transfer 做 replacement cancel
+5. `src/modules/state_store.py` 已扩展 `pending_txs`：
+   - 新增 `cancel_tx_hash / cancel_nonce / cancel_gas_price_wei`
+   - 新增 `cancel_requested_at / cancelled_at`
+   - 新增 `cancelling / cancelled` 状态
+6. `src/modules/state_store.py` 已扩展 `execution_attempts`：
+   - 新增 `cancel_tx_hash / cancel_nonce / cancel_gas_price_wei`
+7. `src/app.py` 的 pending tx 恢复现在会：
+   - 优先恢复 `cancelling` 阶段
+   - 在 replacement 重试预算耗尽且 `cancel_pending_after_sec` 到期后，主动发起 cancel tx
+   - cancel receipt 确认后把 pending tx 标记为 `cancelled`
+   - cancel gas 会并入 `execution_attempts.actual_gas_usd`
+
+本次验证：
+
+1. 执行 `python3 -m py_compile src/app.py src/evm.py src/modules/execution.py src/modules/state_store.py src/core/models.py src/core/config.py`
+   - 结果：成功
+2. 执行 `env PYTHONPATH=src python3.11 - <<'PY' ... load_config(Path('config/live.toml')) ... PY`
+   - 结果：成功，`cancel_pending_after_sec` 解析为 `180`
+3. 执行临时 SQLite 冒烟脚本验证：
+   - `pending_txs` 已创建 `cancel_*` 字段与 `cancelled_at`
+   - `execution_attempts` 已创建 `cancel_*` 字段
+   - `mark_pending_tx_cancelling(...)`、`mark_pending_tx_cancelled(...)`、`update_execution_attempt_result(...)` 可正常写入 cancel 元数据
+
+本次剩余缺口：
+
+1. 还没有 txpool 或等价数据源来识别外部替换交易。
+2. cancel tx 失败后的细粒度错误分类和后续处置还不够细。
+3. 主网测试网/只读/最小仓位的推进清单仍待文档化。
 
 ### 2026-03-03 步骤 22：live 配置模板收口与仓位上限接线
 

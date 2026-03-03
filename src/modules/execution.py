@@ -835,6 +835,28 @@ class LiveExecutionEngine(BaseExecutionEngine):
             approve_gas_price_wei=approve_tx.gas_price_wei if approve_tx is not None else None,
         )
 
+    def cancel_pending_tx(self, pending_tx: Any) -> Any:
+        cancel_nonce = self._pending_tx_nonce(pending_tx, "swap_nonce")
+        if cancel_nonce is None:
+            cancel_nonce = self._pending_tx_nonce(pending_tx, "approve_nonce")
+        if cancel_nonce is None:
+            raise ValueError("Pending tx is missing nonce metadata for cancellation.")
+
+        prior_gas_candidates = [
+            self._pending_tx_gas_price_wei(pending_tx, "cancel_gas_price_wei"),
+            self._pending_tx_gas_price_wei(pending_tx, "swap_gas_price_wei"),
+            self._pending_tx_gas_price_wei(pending_tx, "approve_gas_price_wei"),
+        ]
+        prior_gas_price_wei = max(
+            (value for value in prior_gas_candidates if value is not None),
+            default=None,
+        )
+        min_gas_price_wei = self._replacement_min_gas_price_wei(prior_gas_price_wei)
+        return self.client.cancel_transaction(
+            nonce=cancel_nonce,
+            min_gas_price_wei=min_gas_price_wei,
+        )
+
     def confirm_pending_tx(
         self,
         symbol: SymbolConfig,

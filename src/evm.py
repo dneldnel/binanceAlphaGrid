@@ -110,6 +110,31 @@ class SubmittedTransaction:
     gas_price_wei: int
 
 
+@dataclass(frozen=True)
+class PendingPoolTransaction:
+    tx_hash: str
+    nonce: int
+    from_address: str
+    to_address: str | None
+    value_wei: int
+    input_data: str
+    gas_price_wei: int | None
+    source: str
+
+    def is_zero_value_self_transfer(self, wallet_address: str | None) -> bool:
+        if not wallet_address:
+            return False
+        wallet_lower = wallet_address.lower()
+        to_address = (self.to_address or "").lower()
+        input_data = self.input_data.lower()
+        return (
+            self.from_address.lower() == wallet_lower
+            and to_address == wallet_lower
+            and self.value_wei == 0
+            and input_data in {"", "0x", "0x0", "0x00"}
+        )
+
+
 class TransactionSendError(LiveModeError):
     def __init__(
         self,
@@ -227,10 +252,34 @@ class EvmRouterClient:
     def validate_symbol(self, symbol: SymbolConfig) -> None:
         if not symbol.route.base_token_address:
             raise LiveModeError(f"{symbol.name}: route.base_token_address is required.")
+        if symbol.route.base_token_address.lower() == "0x0000000000000000000000000000000000000000":
+            raise LiveModeError(f"{symbol.name}: route.base_token_address is placeholder.")
+        if not symbol.route.quote_token_address:
+            raise LiveModeError(f"{symbol.name}: route.quote_token_address is required.")
+        if symbol.route.quote_token_address.lower() == "0x0000000000000000000000000000000000000000":
+            raise LiveModeError(f"{symbol.name}: route.quote_token_address is placeholder.")
         if not symbol.route.buy_path:
             raise LiveModeError(f"{symbol.name}: route.buy_path is required.")
         if not symbol.route.sell_path:
             raise LiveModeError(f"{symbol.name}: route.sell_path is required.")
+        if any(
+            address.lower() == "0x0000000000000000000000000000000000000000"
+            for address in symbol.route.buy_path
+        ):
+            raise LiveModeError(f"{symbol.name}: route.buy_path contains placeholder address.")
+        if any(
+            address.lower() == "0x0000000000000000000000000000000000000000"
+            for address in symbol.route.sell_path
+        ):
+            raise LiveModeError(f"{symbol.name}: route.sell_path contains placeholder address.")
+        if symbol.route.buy_path[0].lower() != symbol.route.quote_token_address.lower():
+            raise LiveModeError(f"{symbol.name}: route.buy_path must start with quote token.")
+        if symbol.route.buy_path[-1].lower() != symbol.route.base_token_address.lower():
+            raise LiveModeError(f"{symbol.name}: route.buy_path must end with base token.")
+        if symbol.route.sell_path[0].lower() != symbol.route.base_token_address.lower():
+            raise LiveModeError(f"{symbol.name}: route.sell_path must start with base token.")
+        if symbol.route.sell_path[-1].lower() != symbol.route.quote_token_address.lower():
+            raise LiveModeError(f"{symbol.name}: route.sell_path must end with quote token.")
 
     def get_token_decimals(self, token_address: str, configured: int | None = None) -> int:
         if configured is not None:
@@ -254,6 +303,12 @@ class EvmRouterClient:
             raise LiveModeError("wallet_address is required to query token balances.")
         token = self.erc20_contract(token_address)
         return int(token.functions.balanceOf(self.wallet_address).call())
+
+    def get_native_balance_wei(self, wallet_address: str | None = None) -> int:
+        address = wallet_address or self.wallet_address
+        if address is None:
+            raise LiveModeError("wallet_address is required to query native balance.")
+        return int(self.w3.eth.get_balance(self.to_checksum(address)))
 
     def to_raw_amount(self, amount: float, decimals: int) -> int:
         scaled = Decimal(str(amount)) * (Decimal(10) ** decimals)
@@ -467,6 +522,78 @@ class EvmRouterClient:
             )
         return SubmittedTransaction(tx_hash=tx_hash_hex, nonce=tx_nonce, gas_price_wei=gas_price)
 
+    def send_native_transfer(
+        self,
+        *,
+        to_address: str,
+        value_wei: int,
+        nonce: int | None = None,
+        min_gas_price_wei: int | None = None,
+    ) -> SubmittedTransaction:
+        self.require_write_mode()
+        gas_price = self._resolve_gas_price_wei(min_gas_price_wei=min_gas_price_wei)
+        max_gas_price = self.w3.to_wei(self.config.execution.max_gas_gwei, "gwei")
+        if gas_price > max_gas_price:
+            raise LiveModeError(
+                f"Requested gas price {gas_price} is above configured max_gas_gwei {self.config.execution.max_gas_gwei}"
+            )
+
+        assert self.wallet_address is not None
+        assert self.account is not None
+        tx_nonce = nonce
+        if tx_nonce is None:
+            tx_nonce = self.get_wallet_transaction_count("pending")
+        tx = {
+            "from": self.wallet_address,
+            "to": self.to_checksum(to_address),
+            "value": int(value_wei),
+            "chainId": self.config.chain.chain_id,
+            "nonce": tx_nonce,
+            "gasPrice": gas_price,
+        }
+        estimated_gas = int(self.w3.eth.estimate_gas(tx))
+        tx["gas"] = int(estimated_gas * 1.15)
+
+        signed = self.account.sign_transaction(tx)
+        tx_hash = self.w3.eth.send_raw_transaction(signed.raw_transaction)
+        tx_hash_hex = tx_hash.hex()
+        try:
+            receipt = self.w3.eth.wait_for_transaction_receipt(
+                tx_hash,
+                timeout=self.config.router.tx_wait_timeout_sec,
+                poll_latency=self.config.router.tx_poll_interval_sec,
+            )
+        except Exception as exc:
+            raise TransactionSendError(
+                f"Failed waiting for receipt: {exc}",
+                tx_hash=tx_hash_hex,
+                nonce=tx_nonce,
+                gas_price_wei=gas_price,
+            ) from exc
+        if int(receipt["status"]) != 1:
+            raise TransactionSendError(
+                f"Transaction reverted: {tx_hash_hex}",
+                tx_hash=tx_hash_hex,
+                nonce=tx_nonce,
+                gas_price_wei=gas_price,
+            )
+        return SubmittedTransaction(tx_hash=tx_hash_hex, nonce=tx_nonce, gas_price_wei=gas_price)
+
+    def cancel_transaction(
+        self,
+        *,
+        nonce: int,
+        min_gas_price_wei: int | None = None,
+    ) -> SubmittedTransaction:
+        if self.wallet_address is None:
+            raise LiveModeError("wallet_address is required to cancel pending transactions.")
+        return self.send_native_transfer(
+            to_address=self.wallet_address,
+            value_wei=0,
+            nonce=nonce,
+            min_gas_price_wei=min_gas_price_wei,
+        )
+
     def _estimate_function_gas_cost_usd(self, function_call: Any) -> float | None:
         self.require_write_mode()
         if self.wallet_address is None:
@@ -538,6 +665,217 @@ class EvmRouterClient:
             if exc.__class__.__name__ == "TransactionNotFound":
                 return None
             raise
+
+    def get_wallet_pending_transactions_by_nonce(
+        self,
+    ) -> dict[int, list[PendingPoolTransaction]] | None:
+        if self.wallet_address is None:
+            raise LiveModeError("wallet_address is required to inspect wallet txpool state.")
+
+        loaders = (
+            self._load_pending_transactions_from_txpool_content_from,
+            self._load_pending_transactions_from_txpool_content,
+            self._load_pending_transactions_from_pending_block,
+        )
+        for loader in loaders:
+            pending_txs = loader()
+            if pending_txs is None:
+                continue
+            grouped: dict[int, list[PendingPoolTransaction]] = {}
+            for tx in pending_txs:
+                grouped.setdefault(tx.nonce, []).append(tx)
+            return grouped
+        return None
+
+    def _load_pending_transactions_from_txpool_content_from(
+        self,
+    ) -> list[PendingPoolTransaction] | None:
+        result = self._rpc_request_result("txpool_contentFrom", [self.wallet_address])
+        if result is None:
+            return None
+        if not isinstance(result, dict):
+            return []
+
+        transactions: dict[str, PendingPoolTransaction] = {}
+        for pool_name in ("pending", "queued"):
+            nonce_map = result.get(pool_name, {})
+            if not isinstance(nonce_map, dict):
+                continue
+            for entry in nonce_map.values():
+                self._collect_txpool_entry_transactions(
+                    entry,
+                    source=f"txpool_contentFrom:{pool_name}",
+                    collector=transactions,
+                )
+        return list(transactions.values())
+
+    def _load_pending_transactions_from_txpool_content(
+        self,
+    ) -> list[PendingPoolTransaction] | None:
+        result = self._rpc_request_result("txpool_content", [])
+        if result is None:
+            return None
+        if not isinstance(result, dict):
+            return []
+
+        wallet_address = self.wallet_address
+        assert wallet_address is not None
+        transactions: dict[str, PendingPoolTransaction] = {}
+        for pool_name in ("pending", "queued"):
+            address_map = result.get(pool_name, {})
+            if not isinstance(address_map, dict):
+                continue
+            for raw_address, nonce_map in address_map.items():
+                normalized = self._normalize_address(raw_address)
+                if normalized is None or normalized.lower() != wallet_address.lower():
+                    continue
+                self._collect_txpool_entry_transactions(
+                    nonce_map,
+                    source=f"txpool_content:{pool_name}",
+                    collector=transactions,
+                )
+        return list(transactions.values())
+
+    def _load_pending_transactions_from_pending_block(
+        self,
+    ) -> list[PendingPoolTransaction] | None:
+        result = self._rpc_request_result("eth_getBlockByNumber", ["pending", True])
+        if result is None:
+            return None
+        if not isinstance(result, dict):
+            return []
+
+        transactions: dict[str, PendingPoolTransaction] = {}
+        for entry in result.get("transactions", []) or []:
+            transaction = self._parse_pending_pool_transaction(
+                entry,
+                tx_hash=(entry or {}).get("hash") if isinstance(entry, dict) else None,
+                source="eth_getBlockByNumber:pending",
+            )
+            if transaction is not None:
+                transactions[transaction.tx_hash.lower()] = transaction
+        return list(transactions.values())
+
+    def _collect_txpool_entry_transactions(
+        self,
+        raw: Any,
+        *,
+        source: str,
+        collector: dict[str, PendingPoolTransaction],
+    ) -> None:
+        if not isinstance(raw, dict):
+            return
+        for key, value in raw.items():
+            if isinstance(value, dict) and self._looks_like_transaction_entry(value):
+                transaction = self._parse_pending_pool_transaction(
+                    value,
+                    tx_hash=value.get("hash") or key,
+                    source=source,
+                )
+                if transaction is not None:
+                    collector[transaction.tx_hash.lower()] = transaction
+                continue
+            if isinstance(value, dict):
+                self._collect_txpool_entry_transactions(
+                    value,
+                    source=source,
+                    collector=collector,
+                )
+
+    def _looks_like_transaction_entry(self, raw: dict[str, Any]) -> bool:
+        return "nonce" in raw and "from" in raw
+
+    def _parse_pending_pool_transaction(
+        self,
+        raw: Any,
+        *,
+        tx_hash: Any,
+        source: str,
+    ) -> PendingPoolTransaction | None:
+        if not isinstance(raw, dict):
+            return None
+        wallet_address = self.wallet_address
+        if wallet_address is None:
+            return None
+
+        from_address = self._normalize_address(raw.get("from"))
+        if from_address is None or from_address.lower() != wallet_address.lower():
+            return None
+
+        nonce = self._parse_rpc_int(raw.get("nonce"))
+        if nonce is None:
+            return None
+
+        normalized_hash = self._normalize_hash(tx_hash or raw.get("hash"))
+        if not normalized_hash:
+            return None
+
+        gas_price_wei = self._parse_rpc_int(raw.get("gasPrice"))
+        if gas_price_wei is None:
+            gas_price_wei = self._parse_rpc_int(raw.get("maxFeePerGas"))
+        value_wei = self._parse_rpc_int(raw.get("value")) or 0
+        input_data = str(raw.get("input") or raw.get("data") or "0x")
+        if input_data and not input_data.startswith("0x"):
+            input_data = "0x" + input_data
+
+        return PendingPoolTransaction(
+            tx_hash=normalized_hash,
+            nonce=nonce,
+            from_address=from_address,
+            to_address=self._normalize_address(raw.get("to")),
+            value_wei=value_wei,
+            input_data=input_data,
+            gas_price_wei=gas_price_wei,
+            source=source,
+        )
+
+    def _rpc_request_result(self, method: str, params: list[Any]) -> Any | None:
+        provider = getattr(self.w3, "provider", None)
+        if provider is None or not hasattr(provider, "make_request"):
+            return None
+        try:
+            response = provider.make_request(method, params)
+        except Exception:
+            return None
+        if not isinstance(response, dict):
+            return None
+        if response.get("error") is not None:
+            return None
+        return response.get("result")
+
+    def _parse_rpc_int(self, value: Any) -> int | None:
+        if value is None:
+            return None
+        if isinstance(value, int):
+            return value
+        text = str(value).strip()
+        if not text:
+            return None
+        try:
+            if text.startswith("0x"):
+                return int(text, 16)
+            return int(text)
+        except ValueError:
+            return None
+
+    def _normalize_hash(self, value: Any) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        if not text:
+            return None
+        return text.lower()
+
+    def _normalize_address(self, value: Any) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        if not text:
+            return None
+        try:
+            return self.to_checksum(text)
+        except Exception:
+            return text.lower()
 
     def get_transaction_gas_cost_usd(self, tx_hash: str) -> float | None:
         receipt = self.get_transaction_receipt(tx_hash)

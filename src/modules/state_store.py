@@ -81,6 +81,11 @@ class StateStore:
                     swap_tx_hash TEXT,
                     swap_nonce INTEGER,
                     swap_gas_price_wei INTEGER,
+                    cancel_tx_hash TEXT,
+                    cancel_nonce INTEGER,
+                    cancel_gas_price_wei INTEGER,
+                    cancel_requested_at TEXT,
+                    cancelled_at TEXT,
                     receipt_status INTEGER,
                     estimated_gas_usd REAL,
                     fill_price REAL,
@@ -139,6 +144,9 @@ class StateStore:
                     swap_tx_hash TEXT,
                     swap_nonce INTEGER,
                     swap_gas_price_wei INTEGER,
+                    cancel_tx_hash TEXT,
+                    cancel_nonce INTEGER,
+                    cancel_gas_price_wei INTEGER,
                     actual_gas_usd REAL
                 )
                 """
@@ -277,6 +285,11 @@ class StateStore:
                     swap_tx_hash,
                     swap_nonce,
                     swap_gas_price_wei,
+                    cancel_tx_hash,
+                    cancel_nonce,
+                    cancel_gas_price_wei,
+                    cancel_requested_at,
+                    cancelled_at,
                     receipt_status,
                     estimated_gas_usd,
                     fill_price,
@@ -284,7 +297,7 @@ class StateStore:
                     fill_quote_value,
                     path_json,
                     last_error
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     now,
@@ -302,6 +315,11 @@ class StateStore:
                     None,
                     None,
                     preview.approve_token_address,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
                     None,
                     None,
                     None,
@@ -473,6 +491,80 @@ class StateStore:
                 ),
             )
 
+    def mark_pending_tx_cancelling(
+        self,
+        pending_tx_id: int,
+        note: str,
+        *,
+        cancel_tx_hash: str | None = None,
+        cancel_nonce: int | None = None,
+        cancel_gas_price_wei: int | None = None,
+    ) -> None:
+        now = self._now_iso()
+        with self.conn:
+            self.conn.execute(
+                """
+                UPDATE pending_txs
+                SET updated_at = ?,
+                    status = ?,
+                    cancel_tx_hash = COALESCE(?, cancel_tx_hash),
+                    cancel_nonce = COALESCE(?, cancel_nonce),
+                    cancel_gas_price_wei = COALESCE(?, cancel_gas_price_wei),
+                    cancel_requested_at = COALESCE(cancel_requested_at, ?),
+                    next_retry_at = NULL,
+                    last_error = ?
+                WHERE id = ?
+                """,
+                (
+                    now,
+                    "cancelling",
+                    cancel_tx_hash,
+                    cancel_nonce,
+                    cancel_gas_price_wei,
+                    now,
+                    note,
+                    pending_tx_id,
+                ),
+            )
+
+    def mark_pending_tx_cancelled(
+        self,
+        pending_tx_id: int,
+        reason: str,
+        *,
+        cancel_tx_hash: str | None = None,
+        cancel_nonce: int | None = None,
+        cancel_gas_price_wei: int | None = None,
+    ) -> None:
+        now = self._now_iso()
+        with self.conn:
+            self.conn.execute(
+                """
+                UPDATE pending_txs
+                SET updated_at = ?,
+                    status = ?,
+                    cancel_tx_hash = COALESCE(?, cancel_tx_hash),
+                    cancel_nonce = COALESCE(?, cancel_nonce),
+                    cancel_gas_price_wei = COALESCE(?, cancel_gas_price_wei),
+                    cancel_requested_at = COALESCE(cancel_requested_at, ?),
+                    cancelled_at = ?,
+                    next_retry_at = NULL,
+                    last_error = ?
+                WHERE id = ?
+                """,
+                (
+                    now,
+                    "cancelled",
+                    cancel_tx_hash,
+                    cancel_nonce,
+                    cancel_gas_price_wei,
+                    now,
+                    now,
+                    reason,
+                    pending_tx_id,
+                ),
+            )
+
     def mark_pending_tx_orphaned(self, pending_tx_id: int, reason: str) -> None:
         with self.conn:
             self.conn.execute(
@@ -587,6 +679,11 @@ class StateStore:
                 swap_tx_hash,
                 swap_nonce,
                 swap_gas_price_wei,
+                cancel_tx_hash,
+                cancel_nonce,
+                cancel_gas_price_wei,
+                cancel_requested_at,
+                cancelled_at,
                 receipt_status,
                 estimated_gas_usd,
                 fill_price,
@@ -607,7 +704,7 @@ class StateStore:
         *,
         symbol: str | None = None,
     ) -> int:
-        statuses = ("prepared", "submitted", "retryable", "orphaned")
+        statuses = ("prepared", "submitted", "retryable", "orphaned", "cancelling")
         placeholders = ", ".join("?" for _ in statuses)
         params: list[str] = list(statuses)
         symbol_clause = ""
@@ -670,9 +767,12 @@ class StateStore:
                     swap_tx_hash,
                     swap_nonce,
                     swap_gas_price_wei,
+                    cancel_tx_hash,
+                    cancel_nonce,
+                    cancel_gas_price_wei,
                     actual_gas_usd
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     self._now_iso(),
@@ -680,6 +780,9 @@ class StateStore:
                     side,
                     pending_tx_id,
                     estimated_gas_usd,
+                    None,
+                    None,
+                    None,
                     None,
                     None,
                     None,
@@ -701,6 +804,9 @@ class StateStore:
         swap_tx_hash: str | None = None,
         swap_nonce: int | None = None,
         swap_gas_price_wei: int | None = None,
+        cancel_tx_hash: str | None = None,
+        cancel_nonce: int | None = None,
+        cancel_gas_price_wei: int | None = None,
         actual_gas_usd: float | None = None,
     ) -> None:
         with self.conn:
@@ -713,6 +819,9 @@ class StateStore:
                     swap_tx_hash = COALESCE(?, swap_tx_hash),
                     swap_nonce = COALESCE(?, swap_nonce),
                     swap_gas_price_wei = COALESCE(?, swap_gas_price_wei),
+                    cancel_tx_hash = COALESCE(?, cancel_tx_hash),
+                    cancel_nonce = COALESCE(?, cancel_nonce),
+                    cancel_gas_price_wei = COALESCE(?, cancel_gas_price_wei),
                     actual_gas_usd = COALESCE(?, actual_gas_usd)
                 WHERE id = ?
                 """,
@@ -723,6 +832,9 @@ class StateStore:
                     swap_tx_hash,
                     swap_nonce,
                     swap_gas_price_wei,
+                    cancel_tx_hash,
+                    cancel_nonce,
+                    cancel_gas_price_wei,
                     actual_gas_usd,
                     execution_attempt_id,
                 ),
@@ -738,6 +850,9 @@ class StateStore:
         swap_tx_hash: str | None = None,
         swap_nonce: int | None = None,
         swap_gas_price_wei: int | None = None,
+        cancel_tx_hash: str | None = None,
+        cancel_nonce: int | None = None,
+        cancel_gas_price_wei: int | None = None,
         actual_gas_usd: float | None = None,
     ) -> None:
         with self.conn:
@@ -750,6 +865,9 @@ class StateStore:
                     swap_tx_hash = COALESCE(?, swap_tx_hash),
                     swap_nonce = COALESCE(?, swap_nonce),
                     swap_gas_price_wei = COALESCE(?, swap_gas_price_wei),
+                    cancel_tx_hash = COALESCE(?, cancel_tx_hash),
+                    cancel_nonce = COALESCE(?, cancel_nonce),
+                    cancel_gas_price_wei = COALESCE(?, cancel_gas_price_wei),
                     actual_gas_usd = COALESCE(?, actual_gas_usd)
                 WHERE id = (
                     SELECT id
@@ -766,6 +884,9 @@ class StateStore:
                     swap_tx_hash,
                     swap_nonce,
                     swap_gas_price_wei,
+                    cancel_tx_hash,
+                    cancel_nonce,
+                    cancel_gas_price_wei,
                     actual_gas_usd,
                     pending_tx_id,
                 ),
@@ -830,6 +951,11 @@ class StateStore:
         self._ensure_column("pending_txs", "swap_tx_hash", "TEXT")
         self._ensure_column("pending_txs", "swap_nonce", "INTEGER")
         self._ensure_column("pending_txs", "swap_gas_price_wei", "INTEGER")
+        self._ensure_column("pending_txs", "cancel_tx_hash", "TEXT")
+        self._ensure_column("pending_txs", "cancel_nonce", "INTEGER")
+        self._ensure_column("pending_txs", "cancel_gas_price_wei", "INTEGER")
+        self._ensure_column("pending_txs", "cancel_requested_at", "TEXT")
+        self._ensure_column("pending_txs", "cancelled_at", "TEXT")
         self._ensure_column("pending_txs", "receipt_status", "INTEGER")
         self._ensure_column("pending_txs", "estimated_gas_usd", "REAL")
         self._ensure_column("pending_txs", "fill_price", "REAL")
@@ -844,6 +970,9 @@ class StateStore:
         self._ensure_column("execution_attempts", "swap_tx_hash", "TEXT")
         self._ensure_column("execution_attempts", "swap_nonce", "INTEGER")
         self._ensure_column("execution_attempts", "swap_gas_price_wei", "INTEGER")
+        self._ensure_column("execution_attempts", "cancel_tx_hash", "TEXT")
+        self._ensure_column("execution_attempts", "cancel_nonce", "INTEGER")
+        self._ensure_column("execution_attempts", "cancel_gas_price_wei", "INTEGER")
         self._ensure_column("execution_attempts", "actual_gas_usd", "REAL")
 
     def _ensure_column(self, table: str, column: str, definition: str) -> None:

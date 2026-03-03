@@ -212,6 +212,7 @@ def _parse_execution(raw: dict[str, Any]) -> ExecutionConfig:
         slippage_bps=float(raw["slippage_bps"]),
         max_gas_gwei=float(raw["max_gas_gwei"]),
         replacement_gas_bump_bps=float(raw.get("replacement_gas_bump_bps", 1250.0)),
+        cancel_pending_after_sec=int(raw.get("cancel_pending_after_sec", 0)),
         max_gas_usd_per_tx=float(raw["max_gas_usd_per_tx"]),
         estimated_fee_bps=float(raw["estimated_fee_bps"]),
         min_net_edge_bps=float(raw["min_net_edge_bps"]),
@@ -230,6 +231,12 @@ def _parse_risk(raw: dict[str, Any], *, inventory: InventoryConfig) -> RiskConfi
         max_notional_per_order=float(raw.get("max_notional_per_order", 0.0)),
         max_position_per_symbol_usd=float(
             raw.get("max_position_per_symbol_usd", inventory.max_base_exposure_usd)
+        ),
+        mainnet_buy_enabled=bool(raw.get("mainnet_buy_enabled", True)),
+        mainnet_sell_enabled=bool(raw.get("mainnet_sell_enabled", True)),
+        mainnet_max_notional_per_order=float(raw.get("mainnet_max_notional_per_order", 0.0)),
+        mainnet_max_position_per_symbol_usd=float(
+            raw.get("mainnet_max_position_per_symbol_usd", 0.0)
         ),
         max_daily_realized_loss_usd=float(raw["max_daily_realized_loss_usd"]),
         max_daily_gas_usd=float(raw["max_daily_gas_usd"]),
