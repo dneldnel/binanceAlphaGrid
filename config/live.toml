@@ -27,6 +27,7 @@ explorer_base_url = "https://bscscan.com"
 kind = "uniswap_v2"
 address = "0x0000000000000000000000000000000000000000"
 spender_address = "0x0000000000000000000000000000000000000000"
+router_abi_path = "abi/uniswap_v2_router.json"
 quote_method = "getAmountsOut"
 buy_swap_method = "swapExactTokensForTokensSupportingFeeOnTransferTokens"
 sell_swap_method = "swapExactTokensForTokensSupportingFeeOnTransferTokens"
@@ -114,6 +115,7 @@ router = "single-router"
 deadline_sec = 45
 slippage_bps = 80.0
 max_gas_gwei = 3.0
+replacement_gas_bump_bps = 1250.0
 max_gas_usd_per_tx = 0.30
 estimated_fee_bps = 0.0
 min_net_edge_bps = 15.0
@@ -125,6 +127,8 @@ retry_backoff_ms = 800
 
 [risk]
 kill_switch_file = "run/alpha-grid.stop"
+max_notional_per_order = 20.0
+max_position_per_symbol_usd = 150.0
 max_daily_realized_loss_usd = 30.0
 max_daily_gas_usd = 10.0
 max_consecutive_failed_tx = 3
@@ -175,7 +179,5 @@ sell_path = [
 fee_on_transfer = false
 
 # Replace every 0x000... placeholder before running paper or live mode.
-# Fields below are still planned but not wired into code yet:
-# router_abi_path = "abi/router.json"
-# max_notional_per_order = 20.0
-# max_position_per_symbol_usd = 150.0
+# `risk.max_position_per_symbol_usd` is the live risk cap.
+# `inventory.max_base_exposure_usd` is kept for strategy sizing compatibility.

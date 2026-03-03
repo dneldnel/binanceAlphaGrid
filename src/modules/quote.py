@@ -12,6 +12,12 @@ class QuoteEngine(Protocol):
     def next_quote(self, symbol: SymbolConfig, state: SymbolState) -> QuoteSnapshot: ...
 
 
+class QuoteSignalError(RuntimeError):
+    def __init__(self, signal_kind: str, message: str) -> None:
+        super().__init__(message)
+        self.signal_kind = signal_kind
+
+
 def build_quote_engine(config: AppConfig) -> QuoteEngine:
     if config.runtime.mode in {"paper", "live"}:
         return LiveQuoteEngine(config)
@@ -65,10 +71,19 @@ class LiveQuoteEngine:
         )
 
         buy_amount_in_raw = self.client.to_raw_amount(self.config.market.probe_quote_usd, quote_decimals)
-        buy_amounts = self.client.get_amounts_out(buy_amount_in_raw, symbol.route.buy_path)
+        try:
+            buy_amounts = self.client.get_amounts_out(buy_amount_in_raw, symbol.route.buy_path)
+        except Exception as exc:
+            raise QuoteSignalError(
+                "route_failure",
+                f"{symbol.name}: buy path quote failed: {exc}",
+            ) from exc
         base_out = self.client.from_raw_amount(buy_amounts[-1], base_decimals)
         if base_out <= 0:
-            raise RuntimeError(f"{symbol.name}: quote path returned zero base output")
+            raise QuoteSignalError(
+                "liquidity_drop",
+                f"{symbol.name}: quote path returned zero base output",
+            )
 
         exec_buy_price = self.config.market.probe_quote_usd / base_out
 
@@ -77,10 +92,19 @@ class LiveQuoteEngine:
             1e-8,
         )
         sell_amount_in_raw = self.client.to_raw_amount(sell_probe_base_units, base_decimals)
-        sell_amounts = self.client.get_amounts_out(sell_amount_in_raw, symbol.route.sell_path)
+        try:
+            sell_amounts = self.client.get_amounts_out(sell_amount_in_raw, symbol.route.sell_path)
+        except Exception as exc:
+            raise QuoteSignalError(
+                "route_failure",
+                f"{symbol.name}: sell path quote failed: {exc}",
+            ) from exc
         quote_out = self.client.from_raw_amount(sell_amounts[-1], quote_decimals)
         if sell_probe_base_units <= 0 or quote_out <= 0:
-            raise RuntimeError(f"{symbol.name}: sell path returned zero quote output")
+            raise QuoteSignalError(
+                "liquidity_drop",
+                f"{symbol.name}: sell path returned zero quote output",
+            )
 
         exec_sell_price = quote_out / sell_probe_base_units
         mid_price = (exec_buy_price + exec_sell_price) / 2.0

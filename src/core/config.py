@@ -32,13 +32,14 @@ def load_config(path: Path) -> AppConfig:
     runtime = _parse_runtime(raw["runtime"])
     chain = _parse_chain(raw["chain"])
     market = _parse_market(raw["market"])
-    router = _parse_router(raw.get("router", {}))
+    config_dir = path.parent
+    router = _parse_router(raw.get("router", {}), config_dir=config_dir)
     universe = _parse_universe(raw["universe"])
     reference_price = _parse_reference_price(raw["reference_price"])
     grid = _parse_grid(raw["grid"])
     inventory = _parse_inventory(raw["inventory"])
     execution = _parse_execution(raw["execution"])
-    risk = _parse_risk(raw["risk"])
+    risk = _parse_risk(raw["risk"], inventory=inventory)
     reporting = _parse_reporting(raw["reporting"])
     simulation = _parse_simulation(raw["simulation"])
     symbols = _parse_symbols(
@@ -110,11 +111,12 @@ def _parse_market(raw: dict[str, Any]) -> MarketConfig:
     )
 
 
-def _parse_router(raw: dict[str, Any]) -> RouterConfig:
+def _parse_router(raw: dict[str, Any], *, config_dir: Path) -> RouterConfig:
     return RouterConfig(
         kind=str(raw.get("kind", "uniswap_v2")),
         address=str(raw.get("address", "")),
         spender_address=str(raw.get("spender_address", raw.get("address", ""))),
+        router_abi_path=_resolve_optional_path(raw.get("router_abi_path"), base_dir=config_dir),
         quote_method=str(raw.get("quote_method", "getAmountsOut")),
         buy_swap_method=str(
             raw.get("buy_swap_method", "swapExactTokensForTokensSupportingFeeOnTransferTokens")
@@ -209,6 +211,7 @@ def _parse_execution(raw: dict[str, Any]) -> ExecutionConfig:
         deadline_sec=int(raw["deadline_sec"]),
         slippage_bps=float(raw["slippage_bps"]),
         max_gas_gwei=float(raw["max_gas_gwei"]),
+        replacement_gas_bump_bps=float(raw.get("replacement_gas_bump_bps", 1250.0)),
         max_gas_usd_per_tx=float(raw["max_gas_usd_per_tx"]),
         estimated_fee_bps=float(raw["estimated_fee_bps"]),
         min_net_edge_bps=float(raw["min_net_edge_bps"]),
@@ -220,10 +223,14 @@ def _parse_execution(raw: dict[str, Any]) -> ExecutionConfig:
     )
 
 
-def _parse_risk(raw: dict[str, Any]) -> RiskConfig:
+def _parse_risk(raw: dict[str, Any], *, inventory: InventoryConfig) -> RiskConfig:
     kill_switch_raw = raw.get("kill_switch_file")
     return RiskConfig(
         kill_switch_file=Path(str(kill_switch_raw)) if kill_switch_raw else None,
+        max_notional_per_order=float(raw.get("max_notional_per_order", 0.0)),
+        max_position_per_symbol_usd=float(
+            raw.get("max_position_per_symbol_usd", inventory.max_base_exposure_usd)
+        ),
         max_daily_realized_loss_usd=float(raw["max_daily_realized_loss_usd"]),
         max_daily_gas_usd=float(raw["max_daily_gas_usd"]),
         max_consecutive_failed_tx=int(raw["max_consecutive_failed_tx"]),
@@ -307,6 +314,18 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
             continue
         merged[key] = copy.deepcopy(value)
     return merged
+
+
+def _resolve_optional_path(raw: Any, *, base_dir: Path) -> Path | None:
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text:
+        return None
+    path = Path(text)
+    if not path.is_absolute():
+        path = base_dir / path
+    return path.resolve()
 
 
 def _parse_symbol_route(raw: dict[str, Any], *, market: MarketConfig) -> SymbolRouteConfig:

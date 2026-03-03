@@ -46,6 +46,7 @@ class RouterConfig:
     kind: str
     address: str
     spender_address: str
+    router_abi_path: Path | None
     quote_method: str
     buy_swap_method: str
     sell_swap_method: str
@@ -121,6 +122,7 @@ class ExecutionConfig:
     deadline_sec: int
     slippage_bps: float
     max_gas_gwei: float
+    replacement_gas_bump_bps: float
     max_gas_usd_per_tx: float
     estimated_fee_bps: float
     min_net_edge_bps: float
@@ -134,6 +136,8 @@ class ExecutionConfig:
 @dataclass(frozen=True)
 class RiskConfig:
     kill_switch_file: Path | None
+    max_notional_per_order: float
+    max_position_per_symbol_usd: float
     max_daily_realized_loss_usd: float
     max_daily_gas_usd: float
     max_consecutive_failed_tx: int
@@ -243,6 +247,8 @@ class TradeDecision:
     order_quote_usd: float | None = None
     order_base_ratio: float | None = None
     net_edge_bps: float = 0.0
+    allow_reserve_sell: bool = False
+    force_exit: bool = False
 
 
 @dataclass
@@ -253,6 +259,9 @@ class ExecutionPreview:
     price: float
     base_qty: float
     quote_value: float
+    price_impact_bps: float = 0.0
+    expected_profit_usd: float = 0.0
+    estimated_gas_usd: float | None = None
     amount_in_raw: int | None = None
     expected_out_raw: int | None = None
     amount_out_min_raw: int | None = None
@@ -271,6 +280,11 @@ class TradeFill:
     realized_pnl: float
     message: str
     tx_hash: str | None = None
+    approve_tx_hash: str | None = None
+    tx_nonce: int | None = None
+    approve_nonce: int | None = None
+    tx_gas_price_wei: int | None = None
+    approve_gas_price_wei: int | None = None
 
 
 @dataclass
